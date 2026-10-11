@@ -3,15 +3,15 @@ fastapi>=0.110.0,<1.0.0
 uvicorn[standard]>=0.28.0,<1.0.0
 pydantic>=2.6.0,<3.0.0
 pydantic-settings>=2.2.0,<3.0.0
+pyyaml>=6.0,<7.0
+pyserial>=3.5,<4.0
 
-# HTTP Client for Webhooks & Testing
+# HTTP Client for Webhooks, Telegram & Testing
 httpx>=0.27.0,<1.0.0
 
-# Testing & Verification
+# Testing & Verification (Safety logic unit testing - can be excluded on device)
 pytest>=8.0.0,<9.0.0
 pytest-asyncio>=0.23.0,<1.0.0
 
-# Optional Hardware drivers for physical Radxa ROCK Pi S (Armbian/Debian):
-# Installed via apt or wheels in install.sh:
-# python3-gpiod (or gpiod)
-# python3-smbus2 (or smbus2)
+# Hardware drivers on Linux Armbian:
+# libgpiod is provided via Debian package python3-libgpiod (apt)

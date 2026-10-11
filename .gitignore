@@ -1,23 +1,12 @@
-# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Virtual environments
+*.so
+.pytest_cache/
+*.db
+*.db-wal
+*.db-shm
+data/
 venv/
-.venv/
-env/
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Environment variables
 .env
-
-# Logs
-*.log
+config.yaml

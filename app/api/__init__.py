@@ -20,3 +20,10 @@ try:
     starlette.routing.Router.__init__ = _safe_router_init
 except (ImportError, AttributeError):
     pass
+
+try:
+    from fastapi import FastAPI
+    if not hasattr(FastAPI, "max_body_size"):
+        FastAPI.max_body_size = None
+except (ImportError, AttributeError):
+    pass

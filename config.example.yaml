@@ -1,0 +1,128 @@
+# ==============================================================================
+# Radxa ROCK Pi S Smart Water & Precision Irrigation Controller Configuration
+# Location: /etc/smart-water/config.yaml
+#
+# NOTE: All hardware pin fields are null by default.
+# The system enters SAFE-NO-HARDWARE state until configured.
+# Inspect available pins on your board using: gpioinfo
+# ==============================================================================
+
+# Head-End Hardwired IO (ROCK Pi S Header 1 via PC817 Optocoupler & Relay)
+head_end:
+  chip_path: null                  # e.g. "/dev/gpiochip1"
+  tank_low_float_pin: null         # IN1: Float switch (Active-LOW, pull-up)
+  interlock_out_pin: null          # IN2: Hardware chain output (HIGH = motor allowed)
+  interlock_mid_pin: null          # IN3: Mid-point between Full and Sump floats
+  leak_sensor_pin: null            # IN4: Optical/conductive leak sensor (Active-LOW)
+  contactor_relay_pin: null        # Output: AC Contactor driver relay
+  contactor_relay_active_high: true # true = HIGH to energize, false = LOW to energize
+  debounce_ms: 100                 # Hardware debounce filtering
+
+# Garden Gateway (USB Serial Interface to ESP32-C3 Gateway)
+garden_gateway:
+  serial_port: "/dev/garden-gateway" # Created by udev rule
+  baud_rate: 115200
+  link_loss_timeout_s: 30          # Threshold before raising LINK LOST alert
+
+# Stale Data Timeouts (Stale data = unsafe data -> lock dependent actuators)
+stale_thresholds:
+  head_end_s: 15                   # Maximum acceptable age for head-end float readings
+  garden_s: 90                     # Maximum acceptable age for wireless garden telemetry
+
+# Network & Server Binding
+network:
+  bind_address: "127.0.0.1"        # Bind to 127.0.0.1 or Tailscale/Headscale IP
+  port: 8000
+  allow_all_interfaces: false      # Refuses 0.0.0.0 unless explicitly true
+
+# Security & Authentication
+security:
+  auth_token_file: "/etc/smart-water/auth.json"
+  rate_limit_per_minute: 60
+
+# Motor Safety & Auto-Mode Parameters
+motor:
+  auto_mode: false                 # Automatic tank replenishment
+  max_runtime_s: 900               # 15 minutes max continuous runtime
+  cooldown_s: 1800                 # 30 minutes cooldown after max-runtime trip
+
+# Plant Irrigation Zones (ESP32-C3 Wireless Node)
+zones:
+  zone_1:
+    enabled: false
+    soil_dry_threshold_pct: 35.0
+    pulse_seconds: 15
+    max_pulse_seconds: 60
+    cooldown_hours: 6.0
+    has_flow_meter: true           # Zone 1 has in-line pulse flow meter
+    min_pulses_10s: 5              # Minimum expected flow pulses in 10s
+    calibration:
+      dry_v: null                  # In air voltage (e.g. 2.70V). Uncalibrated = cannot auto-water
+      wet_v: null                  # In water voltage (e.g. 1.20V)
+      margin_v: 0.20
+  zone_2:
+    enabled: false
+    soil_dry_threshold_pct: 35.0
+    pulse_seconds: 15
+    max_pulse_seconds: 60
+    cooldown_hours: 6.0
+    has_flow_meter: false
+    min_pulses_10s: 0
+    calibration:
+      dry_v: null
+      wet_v: null
+      margin_v: 0.20
+  zone_3:
+    enabled: false
+    soil_dry_threshold_pct: 35.0
+    pulse_seconds: 15
+    max_pulse_seconds: 60
+    cooldown_hours: 6.0
+    has_flow_meter: false
+    min_pulses_10s: 0
+    calibration:
+      dry_v: null
+      wet_v: null
+      margin_v: 0.20
+  zone_4:
+    enabled: false
+    soil_dry_threshold_pct: 35.0
+    pulse_seconds: 15
+    max_pulse_seconds: 60
+    cooldown_hours: 6.0
+    has_flow_meter: false
+    min_pulses_10s: 0
+    calibration:
+      dry_v: null
+      wet_v: null
+      margin_v: 0.20
+
+# Audio Alerting (ALSA & espeak-ng over USB Audio Interface)
+audio:
+  enabled: true
+  alsa_device: "default"
+  voice: "en-us"
+  speed: 145                       # espeak-ng speech rate
+  quiet_hours_start: null          # e.g. 22 (10 PM)
+  quiet_hours_end: null            # e.g. 7 (7 AM)
+
+# Telegram Bot Notifications (Optional)
+telegram:
+  enabled: false
+  bot_token: null
+  chat_id: null
+
+# Storage & Database Persistence
+database:
+  path: "/opt/smart-water/data/system.db"
+  retention_days: 90
+  cache_size_kb: -2000             # ~2MB SQLite cache limit for 512MB RAM budget
+
+# Kernel Watchdog Keep-Alive
+watchdog:
+  device_path: "/dev/watchdog"
+  timeout_s: 10
+  pet_interval_s: 3
+
+# Setup Completion Marker
+setup_complete: false
