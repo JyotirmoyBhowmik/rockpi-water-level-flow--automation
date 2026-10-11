@@ -1,0 +1,17 @@
+# Core Framework & ASGI Server (Python 3.11 - 3.14+)
+fastapi>=0.110.0,<1.0.0
+uvicorn[standard]>=0.28.0,<1.0.0
+pydantic>=2.6.0,<3.0.0
+pydantic-settings>=2.2.0,<3.0.0
+
+# HTTP Client for Webhooks & Testing
+httpx>=0.27.0,<1.0.0
+
+# Testing & Verification
+pytest>=8.0.0,<9.0.0
+pytest-asyncio>=0.23.0,<1.0.0
+
+# Optional Hardware drivers for physical Radxa ROCK Pi S (Armbian/Debian):
+# Installed via apt or wheels in install.sh:
+# python3-gpiod (or gpiod)
+# python3-smbus2 (or smbus2)
