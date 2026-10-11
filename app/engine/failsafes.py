@@ -89,7 +89,21 @@ class FailsafeSafetyEngine:
                 await telegram_notifier.send_alert("MOTOR_STOP", msg)
                 logger.info("Motor shut off by hardware interlock (%s)", cause)
 
-        # 3. Max Continuous Motor Runtime Guard (Monotonic Timer)
+        # 3. Head-End Input Lost Guard (Part 2.3: motor running & inputs lost/stale > 3s)
+        if motor["state"] == "RUNNING":
+            last_ts = he.get("last_update_ts")
+            is_unconfigured = not he.get("configured", False)
+            is_lost = (last_ts is None) or ((now - last_ts) > 3.0) or is_unconfigured
+            if is_lost:
+                await head_end_gpio.set_contactor_relay(False)
+                await state_manager.set_motor_state("OFF", reason="head_end_input_lost")
+                alarm_msg = "HEAD_END_INPUT_LOST: Head-end inputs stale, unreadable, or lost while motor running (>3s)."
+                await state_manager.set_alarm("head_end_input_lost", alarm_msg)
+                await audio_controller.speak("Emergency: Head-end sensor signal lost while pump running. Motor shut off.", priority=0)
+                await telegram_notifier.send_alert("HEAD_END_INPUT_LOST", alarm_msg)
+                logger.critical("SAFETY INTERLOCK: %s", alarm_msg)
+
+        # 4. Max Continuous Motor Runtime Guard (Monotonic Timer)
         if motor["state"] == "RUNNING":
             started_mono = state_manager._state["motor"]["started_at_monotonic"]
             if started_mono:
@@ -128,11 +142,14 @@ class FailsafeSafetyEngine:
         """
         Determines whether the AC Contactor motor may be started.
         Enforces:
+          - Setup complete (Part 3.3)
           - Head-end hardware available
           - Data not stale (< 15s)
           - No leak detected
           - No wiring fault
           - Interlock chain healthy (interlock_out == True and interlock_mid == True)
+          - Debounced healthy count >= 3 (Part 2.11)
+          - Minimum 120s OFF time between stop and next start (Part 5.1/5.4)
           - Not locked by max-runtime trip or in cooldown
           - Tank not already full
         """
@@ -140,6 +157,11 @@ class FailsafeSafetyEngine:
         he = state["head_end"]
         motor = state["motor"]
         now = time.time()
+        mono_now = get_monotonic_now()
+
+        # Setup Wizard Enforcement (Part 3.3)
+        if not system_config.setup_complete:
+            return False, "System setup wizard is incomplete. Motor operation blocked."
 
         if not state["hardware_ready"] or not he["configured"]:
             return False, "Head-end hardware is unconfigured or not connected (SAFE-NO-HARDWARE)."
@@ -153,13 +175,6 @@ class FailsafeSafetyEngine:
         if self.wiring_fault_active or he.get("interlock_cause") == "wiring_fault":
             return False, "Wiring fault detected in hardware interlock chain. Motor locked."
 
-        if self.manual_motor_lockout:
-            return False, "Motor is locked due to previous max-runtime trip. Manual reset required via UI/API."
-
-        if self.motor_cooldown_until > now:
-            remaining_m = int((self.motor_cooldown_until - now) / 60)
-            return False, f"Motor is cooling down ({remaining_m}m remaining). Start locked."
-
         cause = he.get("interlock_cause")
         if cause == "tank_full":
             return False, "Overhead tank is already full (Full float open)."
@@ -168,10 +183,37 @@ class FailsafeSafetyEngine:
         if cause != "healthy":
             return False, f"Hardware interlock chain is not complete (Cause: {cause})."
 
+        # N-of-M Debounce check for start condition (Part 2.11)
+        if he.get("healthy_debounce_count", 0) < 3:
+            return False, f"Hardware interlock chain not yet stabilized (healthy count {he.get('healthy_debounce_count', 0)}/3)."
+
+        if self.manual_motor_lockout:
+            return False, "Motor is locked due to previous max-runtime trip. Manual reset required via UI/API."
+
+        if self.motor_cooldown_until > now:
+            remaining_m = int((self.motor_cooldown_until - now) / 60)
+            return False, f"Motor is cooling down ({remaining_m}m remaining). Start locked."
+
+        # Minimum OFF time enforcement (Part 5.1, Part 5.4)
+        last_stop_mono = motor.get("last_stop_monotonic")
+        min_off_s = system_config.motor.min_off_time_s
+        if last_stop_mono is not None:
+            off_elapsed = mono_now - last_stop_mono
+            if off_elapsed < min_off_s:
+                remaining_s = int(min_off_s - off_elapsed)
+                return False, f"Minimum OFF time active ({remaining_s}s remaining). Contactor protected."
+
         return True, None
 
     def reset_motor_lockout(self) -> Tuple[bool, Optional[str]]:
-        """Resets motor lockout after cooldown period expires."""
+        """
+        Resets motor lockout:
+        - Clears manual_motor_lockout
+        - Clears motor_cooldown_until
+        - Clears motor_timeout_tripped and wiring_fault_active
+        - State returns to OFF (Part 2.4)
+        - Clears associated alarms
+        """
         now = time.time()
         if self.motor_cooldown_until > now:
             rem = int((self.motor_cooldown_until - now) / 60)
@@ -179,8 +221,19 @@ class FailsafeSafetyEngine:
 
         self.motor_timeout_tripped = False
         self.manual_motor_lockout = False
+        self.motor_cooldown_until = 0.0
         self.wiring_fault_active = False
-        logger.info("Motor safety lockouts cleared by operator.")
+
+        state = state_manager._state["motor"]
+        state["state"] = "OFF"
+        state["manual_locked"] = False
+        state["cooldown_until_ts"] = 0.0
+
+        # Clear in-memory alarms directly
+        for k in ["motor_timeout", "contactor_mismatch", "head_end_input_lost"]:
+            state_manager._state["alarms"].pop(k, None)
+
+        logger.info("Motor safety lockouts and cooldown cleared by operator. State reset to OFF.")
         return True, None
 
     # -------------------------------------------------------------------------
@@ -209,6 +262,10 @@ class FailsafeSafetyEngine:
         # Reservoir Empty Check
         if g.get("reservoir_wet") is not True:
             return False, "Irrigation reservoir is dry. DC pumps locked."
+
+        # Setup Wizard Enforcement (Part 3.3)
+        if not is_manual and not system_config.setup_complete:
+            return False, "System setup wizard is incomplete. Automatic watering blocked."
 
         # Clock Validity Check (Part 2.3)
         if not is_system_clock_valid() and not is_manual:

@@ -49,10 +49,33 @@ class MotorController:
                 logger.warning("Motor start rejected: %s", reason)
                 return False, f"Start rejected: {reason}"
 
+            # Contactor Pre-check: Welded Contact Guard (Part 2.8)
+            if system_config.head_end.contactor_feedback_pin is not None:
+                pre_fb = await head_end_gpio.read_contactor_feedback()
+                if pre_fb is True:
+                    alarm_msg = "WELDED_CONTACT: Contactor auxiliary feedback detected CLOSED while relay is OFF!"
+                    await state_manager.set_alarm("welded_contact", alarm_msg)
+                    failsafe_engine.manual_motor_lockout = True
+                    await state_manager.set_motor_manual_lock(True)
+                    logger.critical("SAFETY INTERLOCK: %s", alarm_msg)
+                    return False, f"Start rejected: {alarm_msg}"
+
             # Energize relay
             success = await head_end_gpio.set_contactor_relay(True)
             if not success:
                 return False, "Failed to drive contactor relay pin."
+
+            # Contactor Pull-in Check (Part 2.8: 1s timeout)
+            if system_config.head_end.contactor_feedback_pin is not None:
+                post_fb = await head_end_gpio.read_contactor_feedback()
+                if post_fb is not True:
+                    await head_end_gpio.set_contactor_relay(False)
+                    alarm_msg = "CONTACTOR_MISMATCH: Contactor failed to close within 1s of relay energization."
+                    await state_manager.set_alarm("contactor_mismatch", alarm_msg)
+                    failsafe_engine.manual_motor_lockout = True
+                    await state_manager.set_motor_manual_lock(True)
+                    logger.critical("SAFETY INTERLOCK: %s", alarm_msg)
+                    return False, f"Start failed: {alarm_msg}"
 
             now_iso = datetime.now(timezone.utc).isoformat()
             self._started_at_iso = now_iso
@@ -76,6 +99,7 @@ class MotorController:
 
             await head_end_gpio.set_contactor_relay(False)
             await state_manager.set_motor_state("OFF", reason=reason)
+            state_manager._state["motor"]["last_stop_monotonic"] = get_monotonic_now()
 
             duration_s = 0
             if was_running and self._started_at_mono:

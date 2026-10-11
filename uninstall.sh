@@ -30,9 +30,10 @@ if [[ -f /etc/systemd/system/smart-water.service ]]; then
     systemctl daemon-reload
 fi
 
-echo -e "${YELLOW}[2/5] Removing hardware udev rules...${NC}"
+echo -e "${YELLOW}[2/5] Removing hardware udev rules and journald caps...${NC}"
 rm -f /etc/udev/rules.d/99-smart-water.rules
 rm -f /etc/udev/rules.d/99-rockpi-water.rules
+rm -f /etc/systemd/journald.conf.d/smart-water.conf
 udevadm control --reload-rules || true
 udevadm trigger || true
 

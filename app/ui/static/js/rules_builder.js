@@ -1,6 +1,6 @@
 /**
  * Visual Low-Code Rule Builder for Radxa Smart Water.
- * Zero pre-seeded templates or demo rules. Allows saving custom rules as reusable templates in SQLite.
+ * Zero pre-seeded templates. Allows saving custom rules as reusable templates in SQLite.
  */
 
 window.RulesBuilder = {

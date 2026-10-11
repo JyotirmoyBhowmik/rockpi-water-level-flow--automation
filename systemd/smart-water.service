@@ -3,10 +3,10 @@ Description=Radxa ROCK Pi S Smart Water & Precision Irrigation Controller
 Documentation=https://github.com/radxa/rockpis
 After=network-online.target tailscaled.service
 Wants=network-online.target tailscaled.service
-RequiresMountsFor=/opt/smart-water /var/lib/smart-water /etc/smart-water
+RequiresMountsFor=/opt/smart-water
 
 [Service]
-Type=simple
+Type=notify
 User=smartwater
 Group=smartwater
 SupplementaryGroups=gpio i2c dialout audio
@@ -16,14 +16,18 @@ Restart=always
 RestartSec=3s
 
 # ==============================================================================
-# HARDENED MEMORY CGROUPS & WATCHDOG LIMITS (<35MB RUNTIME BUDGET)
+# MEMORY CGROUPS & WATCHDOG LIMITS (Relaxed to 128M / 200M)
 # ==============================================================================
 MemoryAccounting=yes
-MemoryHigh=35M
-MemoryMax=45M
+MemoryHigh=128M
+MemoryMax=200M
 
 # Watchdog Keep-Alive Ping (Hardware /dev/watchdog and sd_notify)
 WatchdogSec=15s
+
+# Automatic systemd state and runtime directory provisioning
+StateDirectory=smart-water
+RuntimeDirectory=smart-water
 
 # Environment configuration
 Environment=PYTHONUNBUFFERED=1
@@ -35,7 +39,6 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/smart-water /run/smart-water /etc/smart-water
 
 # Hardware Device Permissions
 DeviceAllow=/dev/gpiochip* rw

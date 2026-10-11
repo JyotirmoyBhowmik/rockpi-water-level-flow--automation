@@ -11,18 +11,39 @@ import logging
 import os
 from pathlib import Path
 import secrets
+import time
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from app.config import system_config
 
 logger = logging.getLogger("smart_water.security")
 
 
 class SecurityManager:
-    """Manages API token hashing, verification, and rotation."""
+    """Manages API token hashing, verification, rotation, and short-lived SSE tickets."""
 
     def __init__(self, auth_file_path: Optional[str] = None):
         self.auth_file_path = Path(auth_file_path or system_config.security.auth_token_file)
+        self._sse_tickets: dict[str, float] = {}
+
+    def create_sse_ticket(self, ttl_seconds: int = 60) -> str:
+        """Generates a short-lived (60s), single-use ticket for SSE streaming."""
+        ticket = secrets.token_urlsafe(24)
+        now = time.time()
+        # Prune expired tickets
+        self._sse_tickets = {t: exp for t, exp in self._sse_tickets.items() if exp > now}
+        self._sse_tickets[ticket] = now + ttl_seconds
+        return ticket
+
+    def consume_sse_ticket(self, ticket: Optional[str]) -> bool:
+        """Validates and immediately consumes a single-use SSE ticket (Part 1.3)."""
+        if not ticket:
+            return False
+        now = time.time()
+        expiry = self._sse_tickets.pop(ticket, None)
+        if expiry is None:
+            return False
+        return now <= expiry
 
     def _hash_token(self, raw_token: str) -> str:
         """Computes SHA-256 hash of a raw token."""
@@ -95,6 +116,58 @@ class SecurityManager:
         except Exception as e:
             logger.error("Token verification error: %s", e)
             return False
+
+
+import ipaddress
+import socket
+import urllib.parse
+
+
+def validate_webhook_url(url: str, allowlist: List[str]) -> Tuple[bool, Optional[str]]:
+    """
+    Validates webhook URL against Server-Side Request Forgery (SSRF) (Part 3.4):
+      - Must be http or https
+      - Host must be in allowlist (if allowlist configured)
+      - Resolves hostname and rejects loopback, link-local, multicast, and private non-routable IPs
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception as exc:
+        return False, f"Malformed URL: {exc}"
+
+    if parsed.scheme not in ("http", "https"):
+        return False, f"Unsupported scheme '{parsed.scheme}' (only http and https allowed)"
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False, "URL missing valid hostname"
+
+    # Allowlist check: if allowlist is specified, hostname must match an allowed host
+    if allowlist and hostname not in allowlist:
+        return False, f"Host '{hostname}' is not in webhook allowlist {allowlist}"
+
+    try:
+        addr_infos = socket.getaddrinfo(hostname, None)
+        if not addr_infos:
+            return False, f"Could not resolve host '{hostname}'"
+
+        for _, _, _, _, sockaddr in addr_infos:
+            ip_str = sockaddr[0]
+            ip = ipaddress.ip_address(ip_str)
+            if ip.is_loopback:
+                return False, f"Resolved IP {ip_str} is loopback (127.0.0.0/8 or ::1)"
+            if ip.is_link_local:
+                return False, f"Resolved IP {ip_str} is link-local (169.254.0.0/16 or fe80::/10)"
+            if ip.is_reserved or ip.is_multicast:
+                return False, f"Resolved IP {ip_str} is reserved or multicast"
+            if ip.is_unspecified:
+                return False, f"Resolved IP {ip_str} is unspecified (0.0.0.0 or ::)"
+    except socket.gaierror as err:
+        return False, f"DNS resolution failed for '{hostname}': {err}"
+    except Exception as exc:
+        return False, f"Security validation error for '{hostname}': {exc}"
+
+    return True, None
 
 
 security_manager = SecurityManager()

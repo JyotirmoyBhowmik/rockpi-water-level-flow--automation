@@ -110,15 +110,15 @@ GPIO1_C0/Relay(15) | [15] [16] | (16) GPIO1_C1
 ```
 Pin 1  (5V IN)        -> 5V DC Supply Rail
 Pin 2  (GND)          -> Common DC Ground
-Pin 3  (GPIO 2)       -> Zone 1 Flow Meter (Pulse Interrupt)
-Pin 4  (GPIO 3)       -> Reservoir Float Switch (Reed Switch to GND)
-Pin 5  (GPIO 4)       -> ADS1115 I2C SDA
-Pin 6  (GPIO 5)       -> ADS1115 I2C SCL
-Pin 11 (GPIO 6)       -> Zone 1 Pump MOSFET Gate
-Pin 12 (GPIO 7)       -> Zone 2 Pump MOSFET Gate
-Pin 13 (GPIO 10)      -> Zone 3 Pump MOSFET Gate
-Pin 14 (GPIO 20)      -> Zone 4 Pump MOSFET Gate
-Pin 9  (GPIO 8)       -> Onboard Status LED (Active Low)
+Pin 3  (GPIO 0)       -> Zone 1 Pump MOSFET Gate
+Pin 4  (GPIO 1)       -> Zone 2 Pump MOSFET Gate
+Pin 5  (GPIO 3)       -> Zone 3 Pump MOSFET Gate
+Pin 6  (GPIO 4)       -> Zone 1 Flow Meter (via 10k/20k 5V-to-3.3V Divider)
+Pin 7  (GPIO 5)       -> Reservoir Float Switch (Reed Switch to GND)
+Pin 10 (GPIO 6)       -> ADS1115 I2C SDA (4.7k Pull-up to 3.3V)
+Pin 11 (GPIO 7)       -> ADS1115 I2C SCL (4.7k Pull-up to 3.3V)
+Pin 12 (GPIO 8)       -> Onboard Status LED (Active Low)
+Pin 14 (GPIO 10)      -> Zone 4 Pump MOSFET Gate
 ```
 
 ---
@@ -149,7 +149,7 @@ Capacitive soil probes read inverted analog voltage: dry soil = high voltage (~2
    `POST /api/zones/zone_1/calibrate {"step": "dry"}`
 2. **Wet Step:** Submerge probe into a glass of tap water up to the silkscreen depth line. Trigger wet capture:
    `POST /api/zones/zone_1/calibrate {"step": "wet"}`
-3. The software writes reference voltages and sanity margin (`margin_v: 0.4V`) to `/etc/smart-water/config.yaml`.
+3. The software writes reference voltages and sanity margin (`margin_v: 0.4V`) to `/var/lib/smart-water/settings.yaml`.
 4. Readings outside `[wet_v - margin .. dry_v + margin]` trigger an immediate sanity band alarm.
 
 ### 6.2 Zone 1 Pulse Flow Meter Calibration
@@ -181,7 +181,7 @@ To satisfy security isolation constraints without exposing public ports:
 ## 8. Prerequisites & System Requirements
 
 - **Target Board:** Radxa ROCK Pi S (512MB RAM, RK3308).
-- **Operating System:** Armbian / Debian 12 (Bookworm) or Debian 13 (Trixie) Minimal Headless.
+- **Supported Operating System:** Armbian Debian 12 (Bookworm) Minimal Headless.
 - **Micro-SD Card:** High Endurance Class 10 (8GB or larger).
 - **Kernel Watchdog:** `/dev/watchdog` enabled in device tree.
 - **I2C7 Overlay:** Enabled via `overlays=i2c7` in `/boot/armbianEnv.txt`.
@@ -197,13 +197,13 @@ sudo ./install.sh
 
 The script sets up:
 1. Dedicated unprivileged system user `smartwater` (groups: `gpio, i2c, dialout, audio`).
-2. Virtualenv in `/opt/smart-water/venv` with zero-compile pip wheels.
+2. Virtualenv in `/opt/smart-water/venv` with `--system-site-packages` and distribution `python3-libgpiod`.
 3. Stable udev symlink `/dev/garden-gateway` for ESP32-C3 USB CDC.
-4. Cryptographic Bearer token in `/etc/smart-water/auth.json`.
-5. Hardened systemd service with memory cgroups (`MemoryHigh=35M`, `MemoryMax=45M`) and 15s watchdog keepalive.
+4. Cryptographic Bearer token in `/etc/smart-water/auth.json` (0640).
+5. Hardened systemd service with memory cgroups (`MemoryHigh=128M`, `MemoryMax=200M`) and health-gated watchdog keepalive.
 
 > [!NOTE]
-> **Production Exclusion:** The `tests/` directory is strictly excluded from `install.sh` and production deployment. Unit tests run only in developer test environments and may be deleted on the physical board to conserve disk space.
+> **Production Exclusion:** The `tests/` directory is strictly excluded from `install.sh` and production deployment. Unit tests run only in developer test environments and may be safely deleted on the physical board to conserve disk space.
 
 ---
 
@@ -213,10 +213,10 @@ On first boot with unconfigured pins, the system boots into `SAFE-NO-HARDWARE` m
 1. **Welcome:** Explains dual-layer safety architecture.
 2. **PIN Offset Selection:** Displays detected pins from `/api/gpioinfo`.
 3. **PC817 Opto Input Testing:** Live test of float switch states.
-4. **Relay Pilot Test:** 2-second safe relay click verification.
-5. **Gateway Pairing:** Verifies serial packets on `/dev/garden-gateway`.
+4. **Relay Pilot Test:** Safe dry contactor click verification with aux contact feedback.
+5. **Gateway Pairing:** Verifies Protocol v1.1 serial packets on `/dev/garden-gateway`.
 6. **Probe Calibration:** Step-by-step air/water calibration.
-7. **Complete:** Generates final `/etc/smart-water/config.yaml` and starts normal operation.
+7. **Complete:** Validates 4-part setup checklist, generates `/var/lib/smart-water/settings.yaml`, and starts normal operation.
 
 ---
 
@@ -245,23 +245,23 @@ The built-in Rule Studio allows visual, block-based rule creation stored directl
 
 ---
 
-## 14. Serial Gateway Protocol (JSON Lines v1 Specification)
+## 14. Serial Gateway Protocol (Protocol v1.1 Specification)
 
-Every message is a single JSON object terminated by `\n` with `"v": 1`.
+All communication between the ROCK Pi S and the ESP32-C3 node adheres to the shared contract schema in `protocol/messages.json`. Messages are canonical JSON with an HMAC-SHA256 16-hex signature `sig`.
 
 ### Node / Gateway -> Pi:
 ```json
-{"v":1,"t":"hb","seq":142,"uptime_s":710,"rssi":-64}
-{"v":1,"t":"soil","z":1,"volts":1.842,"ts_ms":710200}
-{"v":1,"t":"res","wet":true,"ts_ms":710250}
-{"v":1,"t":"flow","z":1,"pulses":48,"flow_lpm":0.0,"ts_ms":710300}
-{"v":1,"t":"gw_hb","uptime_s":1420}
+{"v":1.1,"t":"hb","seq":142,"boot":1,"uptime_s":710,"res_wet":true,"ads_ok":true,"pumps":[0,0,0,0],"rssi":-64,"sig":"a1b2c3d4e5f60718"}
+{"v":1.1,"t":"soil","seq":143,"boot":1,"z":1,"volts":1.842,"sig":"b2c3d4e5f6071829"}
+{"v":1.1,"t":"flow","seq":144,"boot":1,"z":1,"delta_pulses":12,"period_ms":1000,"sig":"c3d4e5f60718293a"}
+{"v":1.1,"t":"ack","seq":145,"boot":1,"acked_seq":50,"status":"OK","sig":"d4e5f60718293a4b"}
 ```
 
 ### Pi -> Gateway / Node:
 ```json
-{"v":1,"cmd":"pump","z":1,"state":1,"duration_s":15}
-{"v":1,"cmd":"stop_all"}
+{"v":1.1,"cmd":"pump","seq":50,"z":1,"duration_s":15,"sig":"e5f60718293a4b5c"}
+{"v":1.1,"cmd":"stop","seq":51,"z":1,"sig":"f60718293a4b5c6d"}
+{"v":1.1,"cmd":"stop_all","seq":52,"sig":"0718293a4b5c6d7e"}
 ```
 
 ---
@@ -270,8 +270,10 @@ Every message is a single JSON object terminated by `\n` with `"v": 1`.
 
 See complete documentation in [docs/API.md](docs/API.md).
 - `GET /healthz` - Unauthenticated health check.
+- `GET /api/health/detail` - Detailed health status across all loops.
 - `GET /api/telemetry/live` - Instant snapshot of live state.
-- `GET /api/telemetry/stream` - 1Hz Server-Sent Events stream.
+- `POST /api/telemetry/ticket` - Mint 60s single-use ticket for SSE stream.
+- `GET /api/telemetry/stream?ticket=<ticket_id>` - 1Hz Server-Sent Events stream.
 - `POST /api/motor/start` - Energize 25A contactor (`{"confirm": true}`).
 - `POST /api/motor/reset` - Clear safety lockout after cooldown.
 - `POST /api/zones/{id}/water` - Energize precision drip pump.
@@ -281,27 +283,29 @@ See complete documentation in [docs/API.md](docs/API.md).
 
 ## 16. Database Schema & WAL Storage Architecture
 
-SQLite database is located at `/var/lib/smart-water/state.db`.
-- **WAL Mode:** Write-Ahead-Logging with `-2000` cache size (~2MB RAM footprint).
+SQLite database is located at `/var/lib/smart-water/system.db`.
+- **WAL Mode:** Write-Ahead-Logging with `-2000` cache size (~2MB RAM footprint) and `PRAGMA auto_vacuum = INCREMENTAL`.
 - **Zero Seeded Rows:** Database initializes completely empty on fresh install.
-- **Tables:** `readings` (downsampled 60s telemetry), `events` (safety interlock logs), `runs` (actuator runtime history), `rules` (user automation rules), `user_rule_templates`.
+- **Tables:** `readings`, `events`, `runs`, `rules`, `user_rule_templates`, `lockouts` (persistent cooldowns and safety locks).
 
 ---
 
 ## 17. Troubleshooting & Diagnostic Runbook (Quick Links)
 
-See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for 28 diagnostic scenarios covering wiring faults, link drops, audio errors, and safety lockouts.
+See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for 35 diagnostic scenarios covering wiring faults, link drops, audio errors, and safety lockouts.
 
 ---
 
 ## 18. Production Hardening & Security Audit Checklist
 
 - [x] Unprivileged service execution under `smartwater` system user.
-- [x] Memory limit cgroup enforced (`MemoryHigh=35M`, `MemoryMax=45M`).
+- [x] Memory limit cgroup enforced (`MemoryHigh=128M`, `MemoryMax=200M`).
 - [x] Bearer token constant-time SHA-256 verification.
-- [x] Rate limiting on control endpoints (60 actions/min).
+- [x] Single-use short-lived tickets for SSE streams.
+- [x] SSRF validation on webhook destinations.
+- [x] Piped subprocess execution for ALSA audio preventing shell injection.
 - [x] Refusal to bind `0.0.0.0` without explicit configuration.
-- [x] Kernel hardware watchdog keepalive ping loop.
+- [x] Health-gated hardware watchdog keepalive ping loop.
 - [x] All outputs forced OFF on exit or unhandled crash.
 
 ---
@@ -314,14 +318,21 @@ Generate a zero-downtime atomic database snapshot:
 curl -X POST -H "Authorization: Bearer $AUTH_TOKEN" http://localhost:8000/api/backup
 ```
 
-### 19.2 Token Rotation
+### 19.2 Database Restoration
+Restore from backup with SQLite header validation:
+```bash
+python -m app.cli restore /var/lib/smart-water/backup.db
+```
+
+### 19.3 Token Rotation
 Rotate the API token at any time:
 ```bash
 sudo -u smartwater /opt/smart-water/venv/bin/python -m app.cli rotate-token
 ```
 
-### 19.3 Clean Uninstallation
+### 19.4 Clean Uninstallation
 To completely remove the controller and restore default OS state:
 ```bash
 sudo ./uninstall.sh
 ```
+

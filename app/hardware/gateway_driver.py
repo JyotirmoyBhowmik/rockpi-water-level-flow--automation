@@ -1,7 +1,11 @@
 """
 Garden Gateway Serial Driver (USB ESP32-C3 Gateway via /dev/garden-gateway).
-Speaks JSON Lines protocol (v: 1) at 115200 baud.
-Handles async transmission, link-loss timeout detection, and packet validation.
+Implements Protocol v1.1:
+  - Canonical JSON Lines with HMAC-SHA256 signatures
+  - Sequence tracking and boot announcement handling
+  - Command acknowledgment waiting (2s timeout) with 3 retries and exponential backoff
+  - HealthMonitor heartbeat integration (Part 2.1)
+  - Separate node_last_seen and gateway_last_seen tracking
 """
 
 import asyncio
@@ -13,6 +17,21 @@ import uuid
 from typing import Any, Callable, Coroutine, Dict, Optional
 from app.config import system_config
 from app.core.event_bus import bus
+from app.core.watchdog import health_monitor
+from app.hardware.protocol import (
+    AckPacket,
+    CommandPacket,
+    FlowPacket,
+    HeartbeatPacket,
+    PacketModel,
+    SequenceTracker,
+    SoilPacket,
+    StopAllPacket,
+    StopPacket,
+    compute_packet_signature,
+    parse_and_validate_packet,
+    sign_packet,
+)
 
 logger = logging.getLogger("smart_water.gateway")
 
@@ -24,32 +43,43 @@ except ImportError:
     HAS_SERIAL = False
 
 
+class GatewayCommandFailedException(Exception):
+    """Raised when a garden pump command fails after retries."""
+    pass
+
+
 class GardenGatewayDriver:
     """
     Asynchronous serial gateway driver connecting ROCK Pi S to ESP32-C3 Gateway.
-    Serial Protocol: UTF-8 JSON Lines with 'v': 1 version identifier.
+    Protocol v1.1 compliant.
     """
 
     def __init__(self):
         self._serial_port = None
         self._running = False
         self._reader_task: Optional[asyncio.Task] = None
-        self._last_packet_time: float = 0.0
+        self._gateway_last_seen: Optional[float] = None
+        self._node_last_seen: Optional[float] = None
         self._is_link_online: bool = False
         self._write_lock = asyncio.Lock()
-        self._on_packet_callback: Optional[Callable[[Dict[str, Any]], Coroutine[Any, Any, None]]] = None
+        self._tx_seq = 0
+        self._seq_tracker = SequenceTracker()
+        self._pending_acks: Dict[str, asyncio.Future] = {}
+        self._on_packet_callback: Optional[Callable[[PacketModel], Coroutine[Any, Any, None]]] = None
 
     @property
     def is_link_online(self) -> bool:
         return self._is_link_online
 
     @property
-    def last_packet_age_s(self) -> float:
-        if self._last_packet_time == 0.0:
-            return 999999.0
-        return time.time() - self._last_packet_time
+    def gateway_last_seen(self) -> Optional[float]:
+        return self._gateway_last_seen
 
-    def set_packet_callback(self, cb: Callable[[Dict[str, Any]], Coroutine[Any, Any, None]]) -> None:
+    @property
+    def node_last_seen(self) -> Optional[float]:
+        return self._node_last_seen
+
+    def set_packet_callback(self, cb: Callable[[PacketModel], Coroutine[Any, Any, None]]) -> None:
         self._on_packet_callback = cb
 
     async def start(self) -> None:
@@ -79,44 +109,20 @@ class GardenGatewayDriver:
         self._is_link_online = False
         logger.info("Garden gateway serial driver stopped.")
 
-    async def send_pump_run(self, zone_idx: int, run_seconds: int) -> str:
-        """Sends command to run pump for zone (z=1..4). Returns command UUID."""
-        cmd_id = str(uuid.uuid4())
-        msg = {
-            "v": 1,
-            "t": "cmd",
-            "id": cmd_id,
-            "z": zone_idx,
-            "run_s": run_seconds,
-        }
-        await self._write_json_line(msg)
-        return cmd_id
+    def _next_tx_seq(self) -> int:
+        self._tx_seq += 1
+        return self._tx_seq
 
-    async def send_pump_stop(self, zone_idx: int) -> None:
-        """Sends command to stop pump for zone (z=1..4)."""
-        msg = {
-            "v": 1,
-            "t": "stop",
-            "z": zone_idx,
-        }
-        await self._write_json_line(msg)
+    async def _write_packet(self, pkt_dict: Dict[str, Any]) -> bool:
+        """Signs and writes a packet dict as a single JSON line."""
+        key = system_config.garden_gateway.shared_key
+        signed_pkt = sign_packet(pkt_dict, key)
+        line = json.dumps(signed_pkt, separators=(",", ":")) + "\n"
+        encoded = line.encode("utf-8")
 
-    async def send_stop_all(self) -> None:
-        """Sends emergency stop all pumps command to garden node."""
-        msg = {
-            "v": 1,
-            "t": "stop_all",
-        }
-        await self._write_json_line(msg)
-
-    async def _write_json_line(self, data: Dict[str, Any]) -> bool:
-        """Encodes and transmits a JSON Line to the gateway serial device."""
         if not self._serial_port:
             logger.warning("Cannot transmit packet: Gateway serial port not connected.")
             return False
-
-        line = json.dumps(data) + "\n"
-        encoded = line.encode("utf-8")
 
         async with self._write_lock:
             def _write():
@@ -130,15 +136,94 @@ class GardenGatewayDriver:
 
             return await asyncio.to_thread(_write)
 
+    async def send_pump_run(self, zone_idx: int, run_seconds: int) -> str:
+        """
+        Sends command to run pump for zone (z=1..4).
+        Waits up to 2.0s for Ack. Retries up to 3 times with exponential backoff.
+        Raises GatewayCommandFailedException if all attempts fail.
+        """
+        cmd_id = str(uuid.uuid4())
+        max_retries = 3
+        backoff = 0.25
+
+        for attempt in range(1, max_retries + 1):
+            pkt_dict = {
+                "v": "1.1",
+                "t": "cmd",
+                "id": cmd_id,
+                "z": zone_idx,
+                "run_s": run_seconds,
+                "seq": self._next_tx_seq(),
+            }
+
+            loop = asyncio.get_running_loop()
+            ack_future: asyncio.Future = loop.create_future()
+            self._pending_acks[cmd_id] = ack_future
+
+            sent = await self._write_packet(pkt_dict)
+            if not sent:
+                self._pending_acks.pop(cmd_id, None)
+                if attempt == max_retries:
+                    raise GatewayCommandFailedException("GATEWAY_COMMAND_FAILED: Serial transmission failed")
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                continue
+
+            try:
+                ack: AckPacket = await asyncio.wait_for(ack_future, timeout=2.0)
+                if ack.status == "ok":
+                    logger.info("Pump run command %s acknowledged by node (Zone %d, %ds)", cmd_id, zone_idx, run_seconds)
+                    return cmd_id
+                else:
+                    logger.error("Pump run command %s rejected by node: %s", cmd_id, ack.message)
+                    raise GatewayCommandFailedException(f"GATEWAY_COMMAND_FAILED: Node rejected ({ack.status})")
+            except asyncio.TimeoutError:
+                logger.warning("Timeout waiting for Ack on command %s (attempt %d/%d)", cmd_id, attempt, max_retries)
+                if attempt == max_retries:
+                    raise GatewayCommandFailedException(f"GATEWAY_COMMAND_FAILED: No ACK after {max_retries} retries")
+                await asyncio.sleep(backoff)
+                backoff *= 2
+            finally:
+                self._pending_acks.pop(cmd_id, None)
+
+        raise GatewayCommandFailedException("GATEWAY_COMMAND_FAILED: Max retries exceeded")
+
+    async def send_pump_stop(self, zone_idx: int) -> None:
+        """Sends command to stop pump for zone (z=1..4)."""
+        cmd_id = str(uuid.uuid4())
+        pkt_dict = {
+            "v": "1.1",
+            "t": "stop",
+            "id": cmd_id,
+            "z": zone_idx,
+            "seq": self._next_tx_seq(),
+        }
+        await self._write_packet(pkt_dict)
+
+    async def send_stop_all(self) -> None:
+        """Sends emergency stop all pumps command to garden node."""
+        cmd_id = str(uuid.uuid4())
+        pkt_dict = {
+            "v": "1.1",
+            "t": "stop_all",
+            "id": cmd_id,
+            "seq": self._next_tx_seq(),
+        }
+        await self._write_packet(pkt_dict)
+
     async def _gateway_loop(self) -> None:
         """Worker loop maintaining connection and decoding JSON Lines."""
         port_path = system_config.garden_gateway.serial_port
         baud = system_config.garden_gateway.baud_rate
+        key = system_config.garden_gateway.shared_key
 
         while self._running:
+            # Report loop liveness to HealthMonitor (Part 2.1)
+            health_monitor.beat("gateway_reader")
+
             if not HAS_SERIAL:
                 logger.warning("pyserial is not installed. Gateway serial disabled.")
-                await asyncio.sleep(10.0)
+                await asyncio.sleep(5.0)
                 continue
 
             if not os.path.exists(port_path):
@@ -146,10 +231,10 @@ class GardenGatewayDriver:
                     self._is_link_online = False
                     logger.warning("Garden gateway device %s disconnected.", port_path)
                     await bus.publish("garden:link_lost", {"reason": "device_missing"})
-                await asyncio.sleep(3.0)
+                await asyncio.sleep(2.0)
                 continue
 
-            # Open port
+            # Open serial port
             try:
                 def _open_port():
                     return serial.Serial(
@@ -158,52 +243,55 @@ class GardenGatewayDriver:
                         timeout=1.0,
                     )
                 self._serial_port = await asyncio.to_thread(_open_port)
+                self._gateway_last_seen = time.time()
                 logger.info("Connected to garden gateway serial on %s at %d baud.", port_path, baud)
             except Exception as exc:
                 logger.warning("Could not open serial port %s: %s", port_path, exc)
                 self._serial_port = None
-                await asyncio.sleep(5.0)
+                await asyncio.sleep(3.0)
                 continue
 
             # Read lines
             while self._running and self._serial_port:
+                health_monitor.beat("gateway_reader")
                 try:
                     line_bytes = await asyncio.to_thread(self._serial_port.readline)
+                    now = time.time()
                     if not line_bytes:
-                        # Check link loss timeout
-                        if self._is_link_online and self.last_packet_age_s > system_config.garden_gateway.link_loss_timeout_s:
-                            self._is_link_online = False
-                            logger.error(
-                                "LINK LOST: No telemetry from garden node for %ds. Locking all zones.",
-                                int(self.last_packet_age_s),
-                            )
-                            await bus.publish("garden:link_lost", {"age_s": self.last_packet_age_s})
+                        # Check node link loss timeout
+                        if self._is_link_online and self._node_last_seen:
+                            age = now - self._node_last_seen
+                            if age > system_config.garden_gateway.link_loss_timeout_s:
+                                self._is_link_online = False
+                                logger.error("LINK LOST: No telemetry from garden node for %ds.", int(age))
+                                await bus.publish("garden:link_lost", {"age_s": age})
                         continue
 
-                    line = line_bytes.decode("utf-8", errors="replace").strip()
-                    if not line:
+                    self._gateway_last_seen = now
+                    pkt, err = parse_and_validate_packet(line_bytes, key, self._seq_tracker)
+                    if err:
+                        logger.debug("Packet validation rejected: %s", err)
                         continue
 
-                    try:
-                        packet = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.debug("Malformed JSON line from gateway: %s", line)
+                    if not pkt:
                         continue
 
-                    # Validate version
-                    if packet.get("v") != 1:
-                        logger.warning("Unsupported packet version from gateway: %s", line)
-                        continue
-
-                    self._last_packet_time = time.time()
+                    # Node packet accepted and verified
+                    self._node_last_seen = now
                     if not self._is_link_online:
                         self._is_link_online = True
-                        logger.info("Garden wireless link established with gateway.")
+                        logger.info("Garden wireless link established with node (v1.1 verified).")
                         await bus.publish("garden:link_restored", {})
 
-                    # Callback dispatch
+                    # Handle Ack packets
+                    if isinstance(pkt, AckPacket):
+                        fut = self._pending_acks.get(pkt.id)
+                        if fut and not fut.done():
+                            fut.set_result(pkt)
+
+                    # Forward to callback
                     if self._on_packet_callback:
-                        await self._on_packet_callback(packet)
+                        await self._on_packet_callback(pkt)
 
                 except asyncio.CancelledError:
                     break
@@ -218,7 +306,7 @@ class GardenGatewayDriver:
                     pass
                 self._serial_port = None
             self._is_link_online = False
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(1.0)
 
 
 garden_gateway = GardenGatewayDriver()

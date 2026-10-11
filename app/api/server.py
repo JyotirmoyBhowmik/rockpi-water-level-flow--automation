@@ -134,22 +134,35 @@ def create_app() -> FastAPI:
 
     # In-memory sliding rate limiter: ip -> list of timestamps
     rate_limit_history: dict[str, list[float]] = {}
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # Failed auth tracking (Part 3.1: 10 failed/min -> 60s block)
+    failed_auth_history: dict[str, list[float]] = {}
+    blocked_ips: dict[str, float] = {}
 
     # -------------------------------------------------------------------------
-    # Correlation ID & Bearer Token Authentication Middleware
+    # Correlation ID, Security Headers, and Authentication Middleware
     # -------------------------------------------------------------------------
     @app.middleware("http")
     async def security_and_tracing_middleware(request: Request, call_next):
         correlation_id = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
         request.state.correlation_id = correlation_id
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.time()
+
+        # Check IP block from failed auth attempts (Part 3.1)
+        if client_ip in blocked_ips:
+            if now < blocked_ips[client_ip]:
+                return JSONResponse(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    content={
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "status_code": 429,
+                        "error_code": "AUTH_RATE_LIMITED",
+                        "correlation_id": correlation_id,
+                        "message": "Too many failed authentication attempts. IP blocked for 60 seconds.",
+                    },
+                )
+            else:
+                blocked_ips.pop(client_ip, None)
 
         # Public endpoints that bypass authentication
         public_prefixes = (
@@ -160,9 +173,7 @@ def create_app() -> FastAPI:
         is_public = (
             request.url.path == "/"
             or any(request.url.path.startswith(p) for p in public_prefixes)
-            or (not system_config.setup_complete and request.url.path.startswith("/api/setup"))
-            or (not system_config.setup_complete and request.url.path == "/api/telemetry/live")
-            or (not system_config.setup_complete and request.url.path == "/api/telemetry/stream")
+            or request.url.path == "/api/telemetry/stream"  # Handles ticket or Bearer internally
             or (not system_config.setup_complete and request.url.path == "/api/gpioinfo")
         )
 
@@ -173,6 +184,14 @@ def create_app() -> FastAPI:
                 token = auth_header[7:].strip()
 
             if not security_manager.verify_token(token):
+                # Record failed authentication attempt (Part 3.1)
+                attempts = failed_auth_history.setdefault(client_ip, [])
+                failed_auth_history[client_ip] = [ts for ts in attempts if now - ts < 60.0]
+                failed_auth_history[client_ip].append(now)
+                if len(failed_auth_history[client_ip]) >= 10:
+                    blocked_ips[client_ip] = now + 60.0
+                    logger.warning("IP %s temporarily blocked due to 10 failed auth attempts.", client_ip)
+
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     content={
@@ -185,12 +204,9 @@ def create_app() -> FastAPI:
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
-            # Rate Limiting on control endpoints (Part 2.4)
+            # Rate Limiting on control endpoints
             if request.method in ("POST", "PUT", "DELETE"):
-                client_ip = request.client.host if request.client else "unknown"
-                now = time.time()
                 history = rate_limit_history.setdefault(client_ip, [])
-                # Prune older than 60s
                 rate_limit_history[client_ip] = [ts for ts in history if now - ts < 60.0]
                 if len(rate_limit_history[client_ip]) >= system_config.security.rate_limit_per_minute:
                     return JSONResponse(
@@ -207,6 +223,16 @@ def create_app() -> FastAPI:
 
         response: Response = await call_next(request)
         response.headers["X-Correlation-ID"] = correlation_id
+
+        # Strict Security Headers (Part 3.6)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Frame-Options"] = "DENY"
+
         return response
 
     # Global Exception Handler

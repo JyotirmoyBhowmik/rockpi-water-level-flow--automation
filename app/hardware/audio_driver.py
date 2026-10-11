@@ -1,7 +1,7 @@
 """
 Voice Alert Synthesizer for ROCK Pi S via USB Audio Interface (ALSA & espeak-ng).
 Includes debouncing, priority queuing, quiet hours filtering, and deterministic fallback.
-No mock simulation - logs cleanly when audio hardware is absent.
+Hardware driver layer - logs cleanly when audio hardware is absent.
 """
 
 import asyncio
@@ -12,13 +12,20 @@ import time
 from typing import Dict, List, Optional
 from app.config import system_config
 
+import re
+
 logger = logging.getLogger("smart_water.audio")
+
+VOICE_REGEX = re.compile(r"^[a-zA-Z0-9_\-\+]+$")
+ALSA_DEVICE_REGEX = re.compile(r"^[a-zA-Z0-9_\-:,]+$")
 
 
 class VoiceAlertSynthesizer:
     """
     Spoken audio synthesizer invoking espeak-ng piped to aplay over ALSA.
     Features:
+      - Strictly avoids shell=True (Part 2.10)
+      - Validates voice and alsa_device with regex
       - Priority Queue (Emergency=0, Warning=1, Info=2)
       - De-duplication (suppresses identical messages within 30s)
       - Quiet hours enforcement (suppresses non-emergency alerts during night hours)
@@ -95,7 +102,7 @@ class VoiceAlertSynthesizer:
                 if self._queue is None:
                     break
                 item = await self._queue.get()
-                text = item["text"]
+                text = str(item["text"])
                 self._last_spoken_text = text
                 self._last_spoken_time = time.time()
 
@@ -104,17 +111,33 @@ class VoiceAlertSynthesizer:
                 # Execute audio playback if physical tools exist
                 if self._has_audio_hardware:
                     cfg = system_config.audio
-                    cmd = (
-                        f'espeak-ng -v {cfg.voice} -s {cfg.speed} "{text}" --stdout | '
-                        f'aplay -D {cfg.alsa_device} -q'
-                    )
+                    voice = cfg.voice if VOICE_REGEX.match(cfg.voice) else "en"
+                    alsa_dev = cfg.alsa_device if ALSA_DEVICE_REGEX.match(cfg.alsa_device) else "default"
+                    speed = str(cfg.speed)
+
                     try:
-                        proc = await asyncio.create_subprocess_shell(
-                            cmd,
+                        # Pipeline: espeak-ng -> aplay without shell (Part 2.10)
+                        espeak_proc = await asyncio.create_subprocess_exec(
+                            "espeak-ng",
+                            "-v", voice,
+                            "-s", speed,
+                            text,
+                            "--stdout",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+
+                        aplay_proc = await asyncio.create_subprocess_exec(
+                            "aplay",
+                            "-D", alsa_dev,
+                            "-q",
+                            stdin=espeak_proc.stdout,
                             stdout=asyncio.subprocess.DEVNULL,
                             stderr=asyncio.subprocess.DEVNULL,
                         )
-                        await proc.wait()
+
+                        # Wait for pipeline completion
+                        await asyncio.gather(espeak_proc.wait(), aplay_proc.wait())
                     except Exception as e:
                         logger.error("Error invoking ALSA speech pipeline: %s", e)
 

@@ -12,25 +12,68 @@ import tempfile
 from typing import Any, AsyncGenerator, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from app.config import system_config
+from starlette.background import BackgroundTask
+from app.alerts.telegram_client import telegram_notifier
+from app.config import RUNTIME_DIR, system_config
+from app.core.security import security_manager
 from app.core.state_manager import state_manager
+from app.core.watchdog import health_monitor
+from app.hardware.audio_driver import audio_controller
+from app.hardware.gateway_driver import garden_gateway
+from app.hardware.gpio_driver import head_end_gpio
 
 logger = logging.getLogger("smart_water.api.telemetry")
 router = APIRouter(prefix="/api", tags=["telemetry"])
 
 
+@router.post("/telemetry/ticket")
+async def create_telemetry_ticket() -> Dict[str, Any]:
+    """
+    Issues a short-lived (60s), single-use ticket for the SSE stream (Part 1.3).
+    Endpoint is protected by Bearer authentication.
+    """
+    ticket = security_manager.create_sse_ticket(ttl_seconds=60)
+    return {
+        "status": "success",
+        "ticket": ticket,
+        "expires_in_s": 60,
+    }
+
+
 @router.get("/telemetry/live")
 async def get_live_telemetry() -> Dict[str, Any]:
-    """Returns instant snapshot of live state. No fake data: unread items are null."""
+    """Returns instant snapshot of live state. Production data only: unread items are null."""
     return state_manager.get_state()
 
 
 @router.get("/telemetry/stream")
-async def sse_telemetry_stream(request: Request) -> StreamingResponse:
+async def sse_telemetry_stream(
+    request: Request,
+    ticket: Optional[str] = Query(default=None, description="Short-lived single-use ticket"),
+) -> StreamingResponse:
     """
     Real-time Server-Sent Events stream pushing live state every 1000ms.
-    Sub-100KB RAM footprint.
+    Accepts authentication either via:
+      1. Single-use ticket query parameter (?ticket=...) (Part 1.3)
+      2. Bearer Authorization header
     """
+    auth_header = request.headers.get("Authorization")
+    has_bearer = False
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        has_bearer = security_manager.verify_token(token)
+
+    ticket_valid = False
+    if ticket:
+        ticket_valid = security_manager.consume_sse_ticket(ticket)
+
+    if not has_bearer and not ticket_valid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Valid single-use ticket (?ticket=...) or Bearer token required for SSE stream.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     async def event_generator() -> AsyncGenerator[str, None]:
         client_ip = request.client.host if request.client else "unknown"
         logger.info("SSE telemetry client connected: %s", client_ip)
@@ -121,32 +164,96 @@ async def get_readings_history(
 @router.get("/backup")
 async def backup_database():
     """
-    Safely exports SQLite database using online 'VACUUM INTO' command.
-    Generates downloadable .db snapshot.
+    Safely exports SQLite database using online 'VACUUM INTO' command (Part 3.2).
+    Generates downloadable .db snapshot in /run/smart-water (mode 0600),
+    and deletes the temporary file immediately after streaming via BackgroundTask.
     """
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    temp_dir = tempfile.gettempdir()
     backup_filename = f"smart_water_backup_{timestamp}.db"
-    backup_path = os.path.join(temp_dir, backup_filename)
+    backup_path = RUNTIME_DIR / backup_filename
+
+    def _cleanup(path: Path):
+        try:
+            if path.exists():
+                path.unlink()
+                logger.info("Cleaned up temporary backup file %s", path)
+        except Exception as e:
+            logger.warning("Failed to clean up backup file %s: %s", path, e)
 
     def _vacuum():
-        if os.path.exists(backup_path):
-            os.remove(backup_path)
+        if backup_path.exists():
+            backup_path.unlink()
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
         with state_manager._get_connection() as conn:
-            # Atomic online vacuum into destination file
             conn.execute(f"VACUUM INTO '{backup_path}';")
+        try:
+            os.chmod(backup_path, 0o600)
+        except OSError:
+            pass
 
     try:
         await asyncio.to_thread(_vacuum)
         return FileResponse(
-            backup_path,
+            str(backup_path),
             filename=backup_filename,
             media_type="application/vnd.sqlite3",
-            background=None,
+            background=BackgroundTask(_cleanup, backup_path),
         )
     except Exception as exc:
         logger.error("Database backup failed: %s", exc)
+        if backup_path.exists():
+            try:
+                backup_path.unlink()
+            except OSError:
+                pass
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database backup failed: {exc}",
         )
+
+
+@router.get("/health/detail")
+async def get_health_detail() -> Dict[str, Any]:
+    """
+    Returns granular health metrics across all subsystems (Part 5.2):
+      - Watchdog loop ages
+      - Hardware presence and link loss
+      - Database metrics
+    """
+    state = state_manager.get_state()
+    watchdog_ages = health_monitor.get_beat_ages()
+    is_healthy, reason = health_monitor.check_health()
+
+    return {
+        "status": "healthy" if is_healthy else "degraded",
+        "health_gating_ok": is_healthy,
+        "health_failure_reason": reason,
+        "watchdog_loop_ages_s": watchdog_ages,
+        "hardware": {
+            "head_end_ready": head_end_gpio.is_hardware_available,
+            "gateway_serial_online": garden_gateway.is_link_online,
+            "node_last_seen_ts": garden_gateway.node_last_seen,
+            "gateway_last_seen_ts": garden_gateway.gateway_last_seen,
+        },
+        "system_status": state["system_status"],
+        "setup_complete": system_config.setup_complete,
+        "database": {
+            "path": str(state_manager.db_path),
+            "exists": state_manager.db_path.exists(),
+        },
+    }
+
+
+@router.post("/alerts/test")
+async def test_alert_notification() -> Dict[str, Any]:
+    """
+    Triggers test alert notifications via Telegram and local audio (Part 5.2).
+    Protected by Bearer authentication.
+    """
+    msg = "Test alert from Smart Water Controller. Notification subsystem operational."
+    await audio_controller.speak("Test alert: notification system operational.", priority=1)
+    await telegram_notifier.send_alert("TEST_ALERT", msg)
+    return {
+        "status": "success",
+        "message": "Test alert dispatched to audio queue and Telegram.",
+    }

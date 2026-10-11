@@ -16,6 +16,8 @@ head_end:
   leak_sensor_pin: null            # IN4: Optical/conductive leak sensor (Active-LOW)
   contactor_relay_pin: null        # Output: AC Contactor driver relay
   contactor_relay_active_high: true # true = HIGH to energize, false = LOW to energize
+  relay_idle_bias_confirmed: null  # Must be 'pull_up' if active-low relay used
+  contactor_feedback_pin: null     # Optional: Auxiliary contact feedback
   debounce_ms: 100                 # Hardware debounce filtering
 
 # Garden Gateway (USB Serial Interface to ESP32-C3 Gateway)
@@ -23,11 +25,15 @@ garden_gateway:
   serial_port: "/dev/garden-gateway" # Created by udev rule
   baud_rate: 115200
   link_loss_timeout_s: 30          # Threshold before raising LINK LOST alert
+  shared_key: "rockpi-garden-v1.1-key" # HMAC-SHA256 shared secret key
 
 # Stale Data Timeouts (Stale data = unsafe data -> lock dependent actuators)
 stale_thresholds:
   head_end_s: 15                   # Maximum acceptable age for head-end float readings
   garden_s: 90                     # Maximum acceptable age for wireless garden telemetry
+  soil_s: 60                       # Max age for individual soil probe reading
+  reservoir_s: 20                  # Max age for reservoir float status
+  heartbeat_s: 30                  # Max age for node heartbeat
 
 # Network & Server Binding
 network:
@@ -37,14 +43,16 @@ network:
 
 # Security & Authentication
 security:
-  auth_token_file: "/etc/smart-water/auth.json"
+  auth_token_file: "/var/lib/smart-water/auth.json"
   rate_limit_per_minute: 60
+  webhook_allowlist: []            # Host allowlist for rule webhooks (SSRF protection)
 
 # Motor Safety & Auto-Mode Parameters
 motor:
   auto_mode: false                 # Automatic tank replenishment
   max_runtime_s: 900               # 15 minutes max continuous runtime
   cooldown_s: 1800                 # 30 minutes cooldown after max-runtime trip
+  min_off_time_s: 120              # 120s mandatory rest between pump stop and next start
 
 # Plant Irrigation Zones (ESP32-C3 Wireless Node)
 zones:
@@ -114,7 +122,7 @@ telegram:
 
 # Storage & Database Persistence
 database:
-  path: "/opt/smart-water/data/system.db"
+  path: "/var/lib/smart-water/system.db"
   retention_days: 90
   cache_size_kb: -2000             # ~2MB SQLite cache limit for 512MB RAM budget
 

@@ -39,18 +39,30 @@ async def get_system_configuration() -> Dict[str, Any]:
 
 @router.post("/config")
 async def update_system_configuration(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Updates system configuration in memory and saves to YAML."""
+    """Updates system configuration in memory and saves to YAML settings."""
     try:
         # Preserve telegram token if masked
         if payload.get("telegram") and payload["telegram"].get("bot_token") == "********":
             payload["telegram"]["bot_token"] = system_config.telegram.bot_token
 
         updated = system_config.model_validate(payload)
+        
+        # Check if hardware pin or polarity changes require system restart (Part 1.2)
+        from app.config import check_if_restart_required
+        restart_req = check_if_restart_required(updated.head_end)
+        if restart_req:
+            updated.restart_required = True
+
         for field in updated.model_fields_set:
             setattr(system_config, field, getattr(updated, field))
+
         save_config(system_config)
-        logger.info("System configuration updated and written to disk.")
-        return {"status": "success", "message": "Configuration saved."}
+        logger.info("System configuration updated and written to disk. Restart required: %s", restart_req)
+        return {
+            "status": "success",
+            "restart_required": system_config.restart_required,
+            "message": "Configuration saved." + (" Restart required to apply pin/polarity changes." if system_config.restart_required else ""),
+        }
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
@@ -86,6 +98,10 @@ async def test_head_end_input() -> Dict[str, Any]:
     and watch the states change in real time.
     """
     inputs = await head_end_gpio.read_head_end_inputs()
+    if head_end_gpio.is_hardware_available:
+        system_config.setup_checks.input_test = True
+        save_config(system_config)
+
     return {
         "status": "success",
         "inputs": inputs,
@@ -98,12 +114,31 @@ async def test_relay_cycle(payload: TestRelayRequest) -> Dict[str, Any]:
     """
     Step 4 of Setup Wizard:
     Briefly clicks relay on for 1.5 seconds to test coil actuation.
-    REQUIRES confirmation that motor mains is physically disconnected.
+    REQUIRES:
+      - Explicit confirmation that high-voltage motor mains is physically disconnected
+      - Interlock chain healthy (Part 2.5)
+      - No leak detected (Part 2.5)
+      - Guaranteed de-energization via try/finally (Part 2.5)
     """
     if not payload.motor_disconnected_confirmed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Relay test blocked: You MUST confirm that the high-voltage motor is physically disconnected.",
+        )
+
+    # Precondition Checks (Part 2.5)
+    from app.core.state_manager import state_manager
+    state = state_manager.get_state()
+    he = state.get("head_end", {})
+    if he.get("leak_detected") is True:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Relay test blocked: Water leak detected on head-end sensor.",
+        )
+    if he.get("interlock_cause") != "healthy":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Relay test blocked: Hardware interlock chain is not complete (Cause: {he.get('interlock_cause')}).",
         )
 
     if not head_end_gpio.is_hardware_available:
@@ -112,10 +147,15 @@ async def test_relay_cycle(payload: TestRelayRequest) -> Dict[str, Any]:
             detail="Head-end GPIO hardware not available or relay pin not configured.",
         )
 
-    # Click relay on then off
-    await head_end_gpio.set_contactor_relay(True)
-    await asyncio.sleep(1.5)
-    await head_end_gpio.set_contactor_relay(False)
+    # Click relay on then off inside try/finally (Part 2.5)
+    try:
+        await head_end_gpio.set_contactor_relay(True)
+        await asyncio.sleep(1.5)
+    finally:
+        await head_end_gpio.set_contactor_relay(False)
+
+    system_config.setup_checks.relay_test = True
+    save_config(system_config)
 
     return {"status": "success", "message": "Relay test cycle completed (energized for 1.5s then turned OFF)."}
 
@@ -124,12 +164,45 @@ async def test_relay_cycle(payload: TestRelayRequest) -> Dict[str, Any]:
 async def complete_setup(payload: SetupCompleteRequest) -> Dict[str, Any]:
     """
     Step 8 of Setup Wizard:
-    Marks setup_complete as True once tests have passed.
+    Marks setup_complete as True once all 4 verification tests pass (Part 3.3):
+      - input_test
+      - relay_test
+      - gateway_pairing
+      - calibration
     """
     if not payload.confirm_all_passed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Setup cannot be finalized until all verification tests pass.",
+        )
+
+    # Evaluate checks
+    checks = system_config.setup_checks
+    # Also check if gateway is connected to satisfy pairing
+    from app.hardware.gateway_driver import garden_gateway
+    if garden_gateway.is_link_online:
+        checks.gateway_pairing = True
+
+    # Check if at least one zone is calibrated
+    for z in system_config.zones.values():
+        if z.calibration.dry_v is not None and z.calibration.wet_v is not None:
+            checks.calibration = True
+            break
+
+    missing = []
+    if not checks.input_test:
+        missing.append("input_test (PC817 input verification)")
+    if not checks.relay_test:
+        missing.append("relay_test (contactor relay dry click test)")
+    if not checks.gateway_pairing:
+        missing.append("gateway_pairing (ESP32 garden node wireless link)")
+    if not checks.calibration:
+        missing.append("calibration (at least one soil probe calibrated)")
+
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Setup completion blocked. Incomplete prerequisites: {', '.join(missing)}.",
         )
 
     system_config.setup_complete = True

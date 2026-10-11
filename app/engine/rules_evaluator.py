@@ -318,15 +318,21 @@ class RulesEvaluator:
             elif tgt == "telegram.send" and act.message:
                 await telegram_notifier.send_alert("RULE_TRIGGER", act.message)
 
-            # 5. Webhook Post
+            # 5. Webhook Post with SSRF Defense (Part 3.4)
             elif tgt == "webhook.post" and act.url:
-                async def _post():
+                from app.core.security import validate_webhook_url
+                is_safe, err_msg = validate_webhook_url(act.url, system_config.security.webhook_allowlist)
+                if not is_safe:
+                    logger.error("SSRF PROTECTION: Rule webhook '%s' rejected: %s", act.url, err_msg)
+                    continue
+
+                async def _post(target_url: str):
                     try:
                         async with httpx.AsyncClient(timeout=4.0) as client:
-                            await client.post(act.url, json=act.payload or {"rule": rule.name})
+                            await client.post(target_url, json=act.payload or {"rule": rule.name})
                     except Exception as e:
                         logger.error("Rule webhook error: %s", e)
-                asyncio.create_task(_post())
+                asyncio.create_task(_post(act.url))
 
 
 rules_evaluator = RulesEvaluator()

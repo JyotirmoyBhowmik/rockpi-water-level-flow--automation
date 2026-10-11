@@ -39,25 +39,9 @@ void on_esp_now_recv(const uint8_t *mac_addr, const uint8_t *data, int len) {
         return;
     }
 
-    // Null-terminate the incoming payload
-    char payload_str[516];
-    memcpy(payload_str, data, len);
-    payload_str[len] = '\0';
-
-    // Parse to ensure valid JSON and inject RSSI if heartbeat
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, payload_str);
-    if (!err) {
-        if (doc["t"] == "hb" && !doc.containsKey("rssi")) {
-            doc["rssi"] = rssi;
-        }
-        serializeJson(doc, Serial);
-        Serial.println();
-    } else {
-        // Fallback: print raw line if JSON parse fails
-        Serial.println(payload_str);
-    }
-
+    // Directly stream payload line to Serial to preserve signature
+    Serial.write(data, len);
+    Serial.println();
     blink_led(10);
 }
 

@@ -127,36 +127,56 @@ The primary safety barrier does NOT rely on software or microcontrollers. Fused 
 
 ---
 
+### 2.6 Contactor Auxiliary Feedback Contact Wiring (Part 2.8)
+Industrial contactors (such as Schneider TeSys LC1D or ABB AF series) feature a mechanical Normally Open (NO) Auxiliary Contact block (terminals 13 & 14) mechanically tied to the main power contacts.
+- **Pull-In Verification:** When the Rock Pi S energizes the relay, the auxiliary contacts must close within 1.0 second. Failure to close indicates coil supply failure or mechanical contact jam (`CONTACTOR_MISMATCH`).
+- **Welded Contact Detection:** Before energizing the relay, the software checks that the aux contact is currently OPEN. If closed while the relay output is de-energized, contacts are welded shut (`WELDED_CONTACT`), instantly locking out the motor and tripping an alarm.
+
+```
+Rock Pi S 3.3V Rail ---+
+                       |
+               [ 10k Pull-Up ]
+                       |
+Rock Pi S Feedback GPIO +----[ 1k Resistor ]----+
+                                                |
+                                      [ Contactor Aux NO ]
+                                      (Terminals 13 & 14)
+                                                |
+Rock Pi S GND ----------------------------------+
+```
+
+---
+
 ## 3. Wireless Garden Node Wiring (ESP32-C3 Super Mini)
 
 ### 3.1 ESP32-C3 Super Mini Pinout Reference
-The ESP32-C3 Super Mini is an ultra-compact RISC-V board operating at 3.3V.
+The ESP32-C3 Super Mini is an ultra-compact RISC-V board operating strictly at **3.3V logic levels**.
 
 ```
                        +-------------------+
              5V (IN) --| 1              16 |-- 3V3 (OUT)
                  GND --| 2              15 |-- GND
- (Flow Meter) GPIO 2 --| 3              14 |-- GPIO 20 (Pump 4 Gate)
-(Res. Float) GPIO 3 --| 4              13 |-- GPIO 10 (Pump 3 Gate)
-   (I2C SDA) GPIO 4 --| 5              12 |-- GPIO 7  (Pump 2 Gate)
-   (I2C SCL) GPIO 5 --| 6              11 |-- GPIO 6  (Pump 1 Gate)
-   (ADC A0)  GPIO 0 --| 7              10 |-- GPIO 9  (BOOT)
-   (ADC A1)  GPIO 1 --| 8               9 |-- GPIO 8  (Onboard LED)
+ (Pump 1 Gate) GPIO 0 --| 3              14 |-- GPIO 10 (Pump 4 Gate)
+ (Pump 2 Gate) GPIO 1 --| 4              13 |-- GPIO 9  (BOOT)
+ (Pump 3 Gate) GPIO 3 --| 5              12 |-- GPIO 8  (Status LED)
+ (Flow Divider)GPIO 4 --| 6              11 |-- GPIO 7  (I2C SCL)
+(Res. Float)  GPIO 5 --| 7              10 |-- GPIO 6  (I2C SDA)
+             NC      --| 8               9 |-- NC
                        +-------------------+
 ```
 
 ---
 
 ### 3.2 ADS1115 16-Bit ADC Wiring (0x48)
-To avoid noisy ESP32 SAR ADC nonlinearities, all capacitive soil moisture sensors are measured via an ADS1115 16-bit I2C ADC.
+To eliminate ESP32 internal SAR ADC nonlinearities and temperature drift, all capacitive soil moisture sensors are digitized via an external ADS1115 16-bit I2C ADC.
 
 ```
-ESP32-C3 Super Mini                    ADS1115 (0x48)
--------------------                    --------------
+ESP32-C3 Super Mini                    ADS1115 (Address 0x48)
+-------------------                    ----------------------
 3V3 ---------------------------------> VDD
 GND ---------------------------------> GND
-GPIO 4 (SDA) ------------------------> SDA
-GPIO 5 (SCL) ------------------------> SCL
+GPIO 6 (SDA) ------------------------> SDA (4.7k pull-up to 3.3V)
+GPIO 7 (SCL) ------------------------> SCL (4.7k pull-up to 3.3V)
 GND ---------------------------------> ADDR (Configures I2C Address 0x48)
 
 Capacitive Soil Probes:
@@ -164,55 +184,113 @@ Probe 1 Analog Out ------------------> A0 (Zone 1: Vegetables)
 Probe 2 Analog Out ------------------> A1 (Zone 2: Herbs)
 Probe 3 Analog Out ------------------> A2 (Zone 3: Perennials)
 Probe 4 Analog Out ------------------> A3 (Zone 4: Shrubs)
-Probe VCC (All) ---------------------> 3V3
-Probe GND (All) ---------------------> GND
+Probe VCC (All 4 Probes) ------------> 3V3
+Probe GND (All 4 Probes) ------------> GND
 ```
 
 ---
 
 ### 3.3 12V Drip Pump MOSFET Drivers (Zones 1-4)
-Four logic-level N-Channel MOSFETs (e.g., IRLZ44N, AO3400) switch the low side of 12V 2A submersible DC pumps.
+Four logic-level N-Channel MOSFETs (e.g., IRLZ44N, AO3400, or LR7843) switch the low side of 12V DC 2A submersible pumps.
 
 ```
        +12V DC Battery / Solar Bus
               |
               +--------------------------+
               |                          |
-          [ Pump + ]                  [ Flyback Diode 1N5819 ]
+          [ Pump + ]                  [ Flyback Diode 1N5819 / SS34 ]
           [ 12V DC ]                  (Cathode to +12V, Anode to Drain)
               |                          |
               +-------------+------------+
                             |
                          Drain
-ESP32-C3 GPIO (6,7,10,20) --- Gate [ 100 Ohm Gate Resistor ]
+ESP32-C3 GPIO (0,1,3,10) --- Gate [ 100 Ohm Gate Resistor ]
                             |
                          Source
                             |
                    Common 12V/GND Rail
 
-* Note: 10k Pull-down resistor hardwired from Gate to GND on every MOSFET.
+* Note: 10k Pull-down resistor hardwired from Gate to GND on every MOSFET module.
 ```
 
 ---
 
-### 3.4 Zone 1 Flow Meter & Reservoir Float
-1. **Hall-Effect Pulse Flow Meter (YF-S201 or similar):**
-   - VCC -> 5V (or 3.3V)
-   - GND -> GND
-   - Signal -> **GPIO 2** (Configured as `INPUT_PULLUP`, interrupt on falling edge).
-2. **Reservoir Reed Float Switch:**
-   - One lead -> **GPIO 3** (Internal pull-up enabled).
-   - Second lead -> **GND**.
-   - Closed to GND when water is present (`reservoir_wet = true`).
+### 3.4 Zone 1 Hall-Effect Flow Meter & 5V-to-3.3V Voltage Divider
+The YF-S201 Hall-effect flow meter requires a 5V supply to operate reliably. However, its pulse output emits 5V square waves, which **will destroy** the ESP32-C3 GPIO pin if connected directly. A precision resistive voltage divider scales the 5V pulse to 3.33V:
+
+```
+YF-S201 Flow Meter (5V)                   ESP32-C3 Garden Node (3.3V Logic)
+-----------------------                   ---------------------------------
++5V Power (Red Wire) --------------------> +5V DC Supply Rail
+GND (Black Wire)     --------------------> Common DC Ground Rail
+                                                    
+Pulse Signal (Yellow) ----[ 10k Resistor ]----+-----> GPIO 4 (Pulse Input)
+(0V - 5V pulses)                              |
+                                      [ 20k Resistor ]
+                                              |
+Common Ground --------------------------------+-----> Common GND Rail
+
+Theoretical Output Voltage:
+V_out = 5.0V * (20k / (10k + 20k)) = 5.0V * (2/3) = 3.33V (Within ESP32-C3 3.6V max limit)
+```
 
 ---
 
-## 4. Wire Gauge & Installation Guidelines
+### 3.5 Reservoir Reed Float Switch
+- Float Lead 1 -> **GPIO 5** (Internal pull-up enabled).
+- Float Lead 2 -> **GND**.
+- Switch is closed when water level is above low threshold (`reservoir_wet = true`). When reservoir runs dry, contacts open and all zone pumps lock out immediately.
+
+---
+
+## 4. Beginner Step-by-Step Assembly & Wiring Guide
+
+Follow these stages in order to guarantee safety and prevent hardware damage:
+
+### Stage 1: Power Supplies & Common Ground
+1. Mount 5V 3A DC power supply (for Rock Pi S & USB Hub) and 12V DC power supply (for drip pumps).
+2. Establish a single-point Star Ground between 5V DC ground and 12V DC ground.
+3. Verify with a digital multimeter (DMM) that 5V and 3.3V rails are within +/-2% before connecting any microcontrollers.
+
+### Stage 2: Head-End Float & Interlock Chain Wiring
+1. Mount the 4-channel PC817 optocoupler board near the Rock Pi S.
+2. Wire the Full Float (NC, top of overhead tank) in series with the Sump Float (NO, bottom of ground reservoir).
+3. Connect the 5V interlock feed through the series chain to the relay module VCC/Enable input.
+4. Tap the mid-point (between Full and Sump floats) into PC817 IN3 (`interlock_mid`).
+5. Tap the end of the chain into PC817 IN2 (`interlock_out`).
+6. Connect the Tank Low float (NO) to PC817 IN1 (`tank_low`).
+7. Connect the manifold leak sensor to PC817 IN4 (`leak_detected`).
+8. Connect the isolated collectors of PC817 IN1-IN4 to Rock Pi S GPIO pins with internal pull-ups enabled.
+
+### Stage 3: AC Contactor & Auxiliary Feedback
+1. Wire the 1-channel optocoupled relay output to switch the AC contactor coil (230V AC or 12V DC).
+2. Install an RC snubber (100 ohm + 0.1 uF) across the contactor coil terminals.
+3. Wire the contactor NO auxiliary contacts (terminals 13 & 14) to the Rock Pi S Aux Feedback GPIO with a 10k pull-up resistor to 3.3V.
+4. **DO NOT connect mains power to the contactor main terminals yet.** Perform the dry relay test wizard first.
+
+### Stage 4: Wireless Garden Node (ESP32-C3)
+1. Mount the ESP32-C3 Super Mini and ADS1115 ADC on a protoboard or DIN-rail carrier.
+2. Wire I2C bus: ESP32 GPIO 6 (SDA) -> ADS1115 SDA, GPIO 7 (SCL) -> ADS1115 SCL. Add 4.7k pull-up resistors to 3.3V.
+3. Wire the 4 capacitive soil probes to ADS1115 channels A0, A1, A2, and A3. Power probes strictly from 3.3V.
+4. Wire reservoir reed float switch to ESP32 GPIO 5 and GND.
+
+### Stage 5: MOSFET Pump Drivers & Flow Divider
+1. Connect the 4 MOSFET driver gates to ESP32 GPIO 0 (Zone 1), GPIO 1 (Zone 2), GPIO 3 (Zone 3), and GPIO 10 (Zone 4).
+2. Ensure each gate has a 10k pull-down resistor to GND so pumps stay OFF during ESP32 boot.
+3. Wire flyback diodes (1N5819 / SS34) across every 12V pump terminal.
+4. Install the 10k / 20k resistor divider on the Zone 1 flow meter signal wire before connecting to ESP32 GPIO 4.
+
+---
+
+## 5. Wire Gauge & Installation Guidelines
 
 | Circuit | Operating Voltage | Peak Current | Recommended Wire Gauge | Max Cable Run |
 | :--- | :--- | :--- | :--- | :--- |
 | **Main AC Pump Feed** | 230V AC | 25A | 4.0 mm² (12 AWG Copper) | 30 meters |
 | **Contactor Coil** | 230V AC / 12V DC | 0.2A | 0.75 mm² (18 AWG) | 5 meters |
+| **Contactor Aux Feedback** | 3.3V DC | <1 mA | 0.5 mm² (20 AWG) | 2 meters |
 | **Opto Float Switches** | 5V DC | 20 mA | 0.5 mm² Shielded Twisted Pair | 50 meters |
 | **12V DC Drip Pumps** | 12V DC | 2.5A per zone | 1.5 mm² (16 AWG) | 10 meters |
+| **Flow Meter Signal** | 5V DC / 3.3V DC | <10 mA | 0.5 mm² Shielded 3-Core | 5 meters |
 | **I2C Bus (RTC/ADC)** | 3.3V DC | <5 mA | Ribbon Cable / 0.2 mm² | 30 cm |
+

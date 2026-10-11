@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SmartWaterProtocolV1_1",
+  "description": "JSON Lines binary/serial contract between ROCK Pi S Controller and ESP32-C3 Garden Node",
+  "type": "object",
+  "required": ["v", "t", "seq", "sig"],
+  "properties": {
+    "v": {
+      "type": "string",
+      "enum": ["1.1"],
+      "description": "Protocol version identifier"
+    },
+    "t": {
+      "type": "string",
+      "enum": ["hb", "soil", "flow", "cmd", "stop", "stop_all", "ack"],
+      "description": "Packet message type"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Strictly monotonic packet sequence number per sender session"
+    },
+    "sig": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "First 16 hexadecimal chars of HMAC-SHA256 over canonical JSON without sig key"
+    }
+  },
+  "oneOf": [
+    {
+      "description": "Heartbeat Packet (Node -> Gateway -> Pi)",
+      "properties": {
+        "t": { "const": "hb" },
+        "boot": { "type": "integer", "minimum": 0 },
+        "uptime_s": { "type": "integer", "minimum": 0 },
+        "res_wet": { "type": "boolean" },
+        "ads_ok": { "type": "boolean" },
+        "pumps": {
+          "type": "array",
+          "items": { "type": "integer", "enum": [0, 1] },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "rssi": { "type": "integer" }
+      },
+      "required": ["boot", "uptime_s", "res_wet", "ads_ok", "pumps", "rssi"]
+    },
+    {
+      "description": "Soil Probe Packet (Node -> Gateway -> Pi)",
+      "properties": {
+        "t": { "const": "soil" },
+        "z": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "volts": { "type": "number", "minimum": 0.0, "maximum": 3.6 }
+      },
+      "required": ["z", "volts"]
+    },
+    {
+      "description": "Flow Meter Delta Packet (Node -> Gateway -> Pi)",
+      "properties": {
+        "t": { "const": "flow" },
+        "z": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "pulses_delta": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["z", "pulses_delta"]
+    },
+    {
+      "description": "Pump Run Command (Pi -> Gateway -> Node)",
+      "properties": {
+        "t": { "const": "cmd" },
+        "id": { "type": "string" },
+        "z": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "run_s": { "type": "integer", "minimum": 1, "maximum": 60 }
+      },
+      "required": ["id", "z", "run_s"]
+    },
+    {
+      "description": "Pump Stop Command (Pi -> Gateway -> Node)",
+      "properties": {
+        "t": { "const": "stop" },
+        "id": { "type": "string" },
+        "z": { "type": "integer", "minimum": 1, "maximum": 4 }
+      },
+      "required": ["id", "z"]
+    },
+    {
+      "description": "Emergency Stop All Command (Pi -> Gateway -> Node)",
+      "properties": {
+        "t": { "const": "stop_all" },
+        "id": { "type": "string" }
+      },
+      "required": ["id"]
+    },
+    {
+      "description": "Command Acknowledgment (Node -> Gateway -> Pi)",
+      "properties": {
+        "t": { "const": "ack" },
+        "id": { "type": "string" },
+        "status": { "type": "string", "enum": ["ok", "err", "rejected"] },
+        "message": { "type": "string" }
+      },
+      "required": ["id", "status"]
+    }
+  ]
+}

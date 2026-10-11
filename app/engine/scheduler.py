@@ -19,6 +19,10 @@ from app.hardware.gpio_driver import head_end_gpio
 logger = logging.getLogger("smart_water.scheduler")
 
 
+from app.core.watchdog import health_monitor
+from app.hardware.protocol import FlowPacket, HeartbeatPacket, SoilPacket
+
+
 class SystemScheduler:
     """Coordinates background loops and telemetry events."""
 
@@ -53,56 +57,72 @@ class SystemScheduler:
                     pass
         logger.info("SystemScheduler stopped.")
 
-    async def _on_gateway_packet(self, packet: Dict[str, Any]) -> None:
-        """Processes incoming JSON Lines packets from garden gateway."""
-        ptype = packet.get("t")
-
-        if ptype == "hb":
+    async def _on_gateway_packet(self, packet: Any) -> None:
+        """Processes incoming Protocol v1.1 packets from garden gateway."""
+        if isinstance(packet, HeartbeatPacket):
             await state_manager.update_garden_heartbeat(
-                rssi=packet.get("rssi", 0),
-                uptime_s=packet.get("uptime_s", 0),
+                seq=packet.seq,
+                uptime_s=packet.uptime_s,
+                res_wet=packet.res_wet,
+                ads_ok=packet.ads_ok,
+                pumps=packet.pumps,
+                rssi=packet.rssi,
+                boot=packet.boot,
             )
-
-        elif ptype == "soil":
-            zone_idx = packet.get("z", 1)
-            volts = packet.get("volts", 0.0)
-            await state_manager.update_garden_soil(zone_idx, volts)
-
-        elif ptype == "res":
-            wet = packet.get("wet", False)
-            await state_manager.update_garden_reservoir(wet)
-
-        elif ptype == "flow":
-            zone_idx = packet.get("z", 1)
-            pulses = packet.get("pulses", 0)
-            await state_manager.update_garden_flow(zone_idx, pulses)
-            # Evaluate flow meter health on zone
-            z_key = f"zone_{zone_idx}"
+        elif isinstance(packet, SoilPacket):
+            await state_manager.update_garden_soil(packet.z, packet.volts)
+        elif isinstance(packet, FlowPacket):
+            await state_manager.update_garden_flow_delta(packet.z, packet.pulses_delta, period_ms=1000)
+            z_key = f"zone_{packet.z}"
             state = state_manager.get_state()
             current_total = state["garden"]["zones"][z_key].get("flow_pulses", 0)
             await failsafe_engine.check_flow_meter_health(z_key, current_total)
-
-        elif ptype == "pump":
-            zone_idx = packet.get("z", 1)
-            is_on = packet.get("on", False)
-            reason = packet.get("reason", "unknown")
-            await state_manager.update_garden_pump(zone_idx, is_on, reason)
-            if not is_on:
-                await plant_controller.on_pump_completed(f"zone_{zone_idx}", reason=reason)
+        elif isinstance(packet, dict):
+            # Dict compatibility for raw or legacy handlers
+            ptype = packet.get("t")
+            if ptype == "hb":
+                await state_manager.update_garden_heartbeat(
+                    seq=packet.get("seq", 0),
+                    uptime_s=packet.get("uptime_s", 0),
+                    res_wet=packet.get("res_wet", False),
+                    ads_ok=packet.get("ads_ok", True),
+                    pumps=packet.get("pumps", [0, 0, 0, 0]),
+                    rssi=packet.get("rssi", 0),
+                    boot=packet.get("boot", 0),
+                )
+            elif ptype == "soil":
+                await state_manager.update_garden_soil(packet.get("z", 1), packet.get("volts", 0.0))
+            elif ptype == "flow":
+                delta = packet.get("pulses_delta", packet.get("pulses", 0))
+                zone_idx = packet.get("z", 1)
+                await state_manager.update_garden_flow_delta(zone_idx, delta, period_ms=1000)
+                z_key = f"zone_{zone_idx}"
+                state = state_manager.get_state()
+                current_total = state["garden"]["zones"][z_key].get("flow_pulses", 0)
+                await failsafe_engine.check_flow_meter_health(z_key, current_total)
+            elif ptype == "pump":
+                zone_idx = packet.get("z", 1)
+                is_on = packet.get("on", False)
+                reason = packet.get("reason", "unknown")
+                await state_manager.update_garden_pump(zone_idx, is_on, reason)
+                if not is_on:
+                    await plant_controller.on_pump_completed(f"zone_{zone_idx}", reason=reason)
 
     async def _head_end_poll_loop(self) -> None:
         """1Hz Loop: Polls PC817 inputs, evaluates interlocks, checks staleness."""
         while self._running:
+            # Heartbeat to health monitor (Part 2.1)
+            health_monitor.beat("head_end_poll")
             try:
                 # 1. Read hardware inputs
                 inputs = await head_end_gpio.read_head_end_inputs()
 
                 # 2. Update state manager
                 await state_manager.update_head_end(
-                    tank_low=inputs["tank_low"],
+                    tank_low=inputs["tank_low_float"],
                     interlock_out=inputs["interlock_out"],
                     interlock_mid=inputs["interlock_mid"],
-                    leak_detected=inputs["leak_detected"],
+                    leak_detected=inputs["leak_sensor"],
                     hardware_available=head_end_gpio.is_hardware_available,
                 )
 
@@ -135,6 +155,8 @@ class SystemScheduler:
     async def _rules_and_auto_loop(self) -> None:
         """5s Loop: Evaluates auto-watering for calibrated zones and user rules."""
         while self._running:
+            # Heartbeat to health monitor (Part 2.1)
+            health_monitor.beat("rules_auto_loop")
             try:
                 await plant_controller.evaluate_auto_watering()
                 await rules_evaluator.evaluate_tick()
