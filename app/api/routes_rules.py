@@ -1,88 +1,39 @@
 """
-Low-Code / No-Code Rule CRUD Endpoints and Preconfigured Automation Templates.
+User Automation Rules & Reusable Templates CRUD Endpoints.
+Zero seeded rules on first run. Stores user-defined rules and user-saved templates in SQLite.
 """
 
-import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, status
-from app.engine.rules_evaluator import RuleDefinition, rules_evaluator
+from app.engine.rules_evaluator import (
+    RuleDefinition,
+    UserRuleTemplate,
+    rules_evaluator,
+)
 
-logger = logging.getLogger("smart_water.api.rules")
 router = APIRouter(prefix="/api/rules", tags=["rules"])
 
 
-PRECONFIGURED_TEMPLATES: List[Dict[str, Any]] = [
-    {
-        "id": "tpl-morning-drip",
-        "name": "Morning Precision Drip",
-        "description": "Waters Zone 1 & 2 for 20 seconds if soil moisture is below 35% and reservoir has water.",
-        "combinator": "AND",
-        "conditions": [
-            {"source": "sensor.zone_1_moisture", "operator": "<", "value": 35.0},
-            {"source": "reservoir.state", "operator": "==", "value": "ok"},
-        ],
-        "actions": [
-            {"target": "pump.zone_1", "duration_seconds": 20},
-            {"target": "voice.announce", "speech_text": "Executing morning precision drip for Zone 1."},
-        ],
-    },
-    {
-        "id": "tpl-hot-weather",
-        "name": "Hot Weather Boost",
-        "description": "Triggers 30s watering cycle on Zone 3 & 4 if voltage indicates high dryness (>2.6V).",
-        "combinator": "AND",
-        "conditions": [
-            {"source": "sensor.zone_3_voltage", "operator": ">", "value": 2.6},
-            {"source": "reservoir.state", "operator": "==", "value": "ok"},
-        ],
-        "actions": [
-            {"target": "pump.zone_3", "duration_seconds": 30},
-            {"target": "voice.announce", "speech_text": "Dry conditions detected. Watering Zone 3."},
-        ],
-    },
-    {
-        "id": "tpl-tank-topup",
-        "name": "Tank Auto-Top-Up",
-        "description": "Automatically energizes AC Contactor pump for 60s when Tank Low Float switch trips.",
-        "combinator": "AND",
-        "conditions": [
-            {"source": "tank.low_float", "operator": "==", "value": True},
-        ],
-        "actions": [
-            {"target": "motor.ac", "duration_seconds": 60},
-            {"target": "voice.announce", "speech_text": "Overhead tank level low. Energizing main pump."},
-        ],
-    },
-    {
-        "id": "tpl-freeze-guard",
-        "name": "Moisture Bounds Guard",
-        "description": "Alerts when soil probe reaches extreme saturation (<1.1V).",
-        "combinator": "AND",
-        "conditions": [
-            {"source": "sensor.zone_1_voltage", "operator": "<", "value": 1.1},
-        ],
-        "actions": [
-            {"target": "voice.announce", "speech_text": "Soil is completely saturated. Check for standing water."},
-        ],
-    },
-]
+class SaveTemplateRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=100)
+    description: Optional[str] = Field(default="")
 
 
 @router.get("", response_model=List[RuleDefinition])
-async def list_rules() -> List[RuleDefinition]:
-    """Returns all configured automation rules."""
+async def list_user_rules() -> List[RuleDefinition]:
+    """Returns active user rules. Empty on first start."""
     return rules_evaluator.get_all_rules()
 
 
-@router.get("/templates")
-async def list_templates() -> List[Dict[str, Any]]:
-    """Returns factory pre-configured low-code templates."""
-    return PRECONFIGURED_TEMPLATES
+@router.get("/templates", response_model=List[UserRuleTemplate])
+async def list_user_templates() -> List[UserRuleTemplate]:
+    """Returns user-saved templates from the database. Empty on first start."""
+    return await rules_evaluator.get_user_templates()
 
 
 @router.get("/{rule_id}", response_model=RuleDefinition)
-async def get_rule(rule_id: str) -> RuleDefinition:
-    """Fetch rule by ID."""
+async def get_user_rule(rule_id: str) -> RuleDefinition:
     rule = rules_evaluator.get_rule(rule_id)
     if not rule:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Rule '{rule_id}' not found.")
@@ -90,15 +41,13 @@ async def get_rule(rule_id: str) -> RuleDefinition:
 
 
 @router.post("", response_model=RuleDefinition, status_code=status.HTTP_201_CREATED)
-async def create_rule(rule: RuleDefinition) -> RuleDefinition:
-    """Creates a new rule definition."""
+async def create_user_rule(rule: RuleDefinition) -> RuleDefinition:
     await rules_evaluator.save_rule(rule)
     return rule
 
 
 @router.put("/{rule_id}", response_model=RuleDefinition)
-async def update_rule(rule_id: str, updated_rule: RuleDefinition) -> RuleDefinition:
-    """Updates an existing rule."""
+async def update_user_rule(rule_id: str, updated_rule: RuleDefinition) -> RuleDefinition:
     existing = rules_evaluator.get_rule(rule_id)
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Rule '{rule_id}' not found.")
@@ -108,8 +57,7 @@ async def update_rule(rule_id: str, updated_rule: RuleDefinition) -> RuleDefinit
 
 
 @router.delete("/{rule_id}")
-async def delete_rule(rule_id: str) -> Dict[str, Any]:
-    """Deletes a rule by ID."""
+async def delete_user_rule(rule_id: str) -> Dict[str, Any]:
     success = await rules_evaluator.delete_rule(rule_id)
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Rule '{rule_id}' not found.")
@@ -117,11 +65,31 @@ async def delete_rule(rule_id: str) -> Dict[str, Any]:
 
 
 @router.post("/{rule_id}/toggle")
-async def toggle_rule(rule_id: str) -> Dict[str, Any]:
-    """Toggles active/disabled status of a rule."""
+async def toggle_user_rule(rule_id: str) -> Dict[str, Any]:
     rule = rules_evaluator.get_rule(rule_id)
     if not rule:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Rule '{rule_id}' not found.")
     rule.enabled = not rule.enabled
     await rules_evaluator.save_rule(rule)
     return {"status": "success", "id": rule.id, "enabled": rule.enabled}
+
+
+@router.post("/{rule_id}/save-template", response_model=UserRuleTemplate, status_code=status.HTTP_201_CREATED)
+async def save_rule_as_template(rule_id: str, payload: SaveTemplateRequest) -> UserRuleTemplate:
+    """Saves a user's custom rule into their database templates library."""
+    tpl = await rules_evaluator.save_as_template(
+        rule_id=rule_id,
+        template_name=payload.name,
+        description=payload.description or "",
+    )
+    if not tpl:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Rule '{rule_id}' not found.")
+    return tpl
+
+
+@router.delete("/templates/{template_id}")
+async def delete_user_template(template_id: str) -> Dict[str, Any]:
+    success = await rules_evaluator.delete_user_template(template_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Template '{template_id}' not found.")
+    return {"status": "success", "deleted": template_id}

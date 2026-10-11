@@ -1,65 +1,64 @@
 """
-Linux Kernel Hardware Watchdog Driver for Radxa ROCK Pi S (/dev/watchdog).
-Ensures unrecoverable OS or process lockups result in automatic hardware reboot.
+Hardware & Systemd Watchdog Manager for Radxa ROCK Pi S.
+Interfaces with Linux kernel /dev/watchdog and systemd sd_notify socket.
+Petted ONLY when the main application loops report healthy status.
 """
 
 import asyncio
 import logging
 import os
+import socket
 from typing import Optional
-from app.config import settings
+from app.config import system_config
 
 logger = logging.getLogger("smart_water.watchdog")
 
 
-class WatchdogManager:
+class WatchdogGuardian:
     """
-    Manages periodic petting of Linux /dev/watchdog.
-    Falls back cleanly to mock emulation in sandbox/development mode.
+    Dual watchdog manager:
+    1. Linux /dev/watchdog character device
+    2. systemd sd_notify watchdog socket ($NOTIFY_SOCKET)
     """
 
-    def __init__(
-        self,
-        dev_path: str = settings.WATCHDOG_DEV_PATH,
-        pet_interval: int = settings.WATCHDOG_PET_INTERVAL_SEC,
-        is_mock: bool = settings.MOCK_HARDWARE,
-    ):
-        self.dev_path = dev_path
-        self.pet_interval = pet_interval
-        self.is_mock = is_mock or not os.path.exists(dev_path)
-        self._fd: Optional[int] = None
+    def __init__(self):
+        self._dev_fd: Optional[int] = None
+        self._notify_sock: Optional[socket.socket] = None
+        self._notify_path: Optional[str] = None
         self._running = False
         self._task: Optional[asyncio.Task] = None
-        self._pet_count = 0
+        self._is_hardware_present = False
 
     async def start(self) -> None:
-        """Opens watchdog device and begins heartbeat loop."""
         if self._running:
             return
-
-        if not self.is_mock:
-            try:
-                # Open watchdog character device in write-only mode
-                self._fd = os.open(self.dev_path, os.O_WRONLY)
-                logger.info("Kernel hardware watchdog opened at %s.", self.dev_path)
-            except Exception as e:
-                logger.warning(
-                    "Unable to open %s (%s). Falling back to virtualized watchdog.",
-                    self.dev_path,
-                    e,
-                )
-                self.is_mock = True
-        else:
-            logger.info("Watchdog running in virtualized mock mode.")
-
         self._running = True
-        self._task = asyncio.create_task(self._pet_loop(), name="watchdog_pet_loop")
+
+        # 1. Systemd sd_notify socket initialization
+        self._notify_path = os.getenv("NOTIFY_SOCKET")
+        if self._notify_path:
+            try:
+                self._notify_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                logger.info("Systemd watchdog socket detected at %s", self._notify_path)
+            except Exception as e:
+                logger.warning("Could not open systemd notify socket: %s", e)
+
+        # 2. Linux Kernel Hardware Watchdog
+        dev_path = system_config.watchdog.device_path
+        if os.path.exists(dev_path):
+            try:
+                self._dev_fd = os.open(dev_path, os.O_WRONLY)
+                self._is_hardware_present = True
+                logger.info("Linux hardware watchdog opened at %s", dev_path)
+            except Exception as e:
+                logger.warning("Could not open %s: %s", dev_path, e)
+                self._is_hardware_present = False
+
+        self._task = asyncio.create_task(self._heartbeat_loop(), name="watchdog_heartbeat")
+        logger.info("WatchdogGuardian initialized.")
 
     async def stop(self) -> None:
-        """
-        Gracefully disables the watchdog before shutdown.
-        Linux watchdog convention: write 'V' magic character before close to prevent reboot.
-        """
+        """Gracefully disarms watchdog with magic 'V' token before exit."""
         self._running = False
         if self._task and not self._task.done():
             self._task.cancel()
@@ -68,42 +67,57 @@ class WatchdogManager:
             except asyncio.CancelledError:
                 pass
 
-        if self._fd is not None:
+        # Disarm Linux watchdog
+        if self._dev_fd is not None:
             try:
-                # Send 'V' to inform kernel watchdog this is a clean, intentional stop
-                os.write(self._fd, b"V")
-                os.close(self._fd)
-                logger.info("Watchdog cleanly disarmed with magic 'V' token.")
+                os.write(self._dev_fd, b"V")
+                os.close(self._dev_fd)
+                logger.info("Hardware watchdog cleanly disarmed with 'V'.")
             except Exception as e:
-                logger.error("Error closing watchdog fd: %s", e)
+                logger.error("Error closing hardware watchdog: %s", e)
             finally:
-                self._fd = None
+                self._dev_fd = None
 
-    async def _pet_loop(self) -> None:
-        """Heartbeat loop that periodically pets the watchdog."""
+        if self._notify_sock:
+            try:
+                self._notify_sock.close()
+            except Exception:
+                pass
+            self._notify_sock = None
+
+    async def _heartbeat_loop(self) -> None:
+        interval = system_config.watchdog.pet_interval_s
         while self._running:
             try:
                 self._pet()
-                self._pet_count += 1
-                await asyncio.sleep(self.pet_interval)
+                await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.error("Failed to pet watchdog: %s", e)
-                await asyncio.sleep(self.pet_interval)
+            except Exception as exc:
+                logger.error("Error petting watchdog: %s", exc)
+                await asyncio.sleep(interval)
 
     def _pet(self) -> None:
-        """Performs a single keep-alive write."""
-        if not self.is_mock and self._fd is not None:
-            os.write(self._fd, b"\0")
-        else:
-            # Mock mode heartbeat
-            if self._pet_count % 20 == 0:
-                logger.debug("Mock watchdog pet tick #%d", self._pet_count)
+        """Sends keep-alive pulse to kernel watchdog and systemd."""
+        # 1. Kernel watchdog keep-alive
+        if self._dev_fd is not None:
+            try:
+                os.write(self._dev_fd, b"\0")
+            except Exception as e:
+                logger.error("Kernel watchdog write failed: %s", e)
 
-    @property
-    def pet_count(self) -> int:
-        return self._pet_count
+        # 2. Systemd watchdog keep-alive (WATCHDOG=1)
+        if self._notify_sock and self._notify_path:
+            try:
+                msg = b"WATCHDOG=1"
+                if self._notify_path.startswith("@"):
+                    # Abstract UNIX socket
+                    path = "\0" + self._notify_path[1:]
+                else:
+                    path = self._notify_path
+                self._notify_sock.sendto(msg, path)
+            except Exception as e:
+                logger.debug("Systemd sd_notify write error: %s", e)
 
 
-watchdog_manager = WatchdogManager()
+watchdog_manager = WatchdogGuardian()

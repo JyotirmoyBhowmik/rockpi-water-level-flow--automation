@@ -1,94 +1,131 @@
 """
-Voice Synthesizer Driver using ALSA and espeak-ng over USB Audio Interface.
-Includes debounced queuing, rate-limiting, and automatic mock fallback.
+Voice Alert Synthesizer for ROCK Pi S via USB Audio Interface (ALSA & espeak-ng).
+Includes debouncing, priority queuing, quiet hours filtering, and deterministic fallback.
+No mock simulation - logs cleanly when audio hardware is absent.
 """
 
 import asyncio
+from datetime import datetime
 import logging
 import shutil
 import time
-from datetime import datetime, timezone
 from typing import Dict, List, Optional
-from app.config import settings
-from app.hardware.base import BaseAudioController
-from app.hardware.mock import mock_audio
+from app.config import system_config
 
 logger = logging.getLogger("smart_water.audio")
 
 
-class RealAudioDriver(BaseAudioController):
+class VoiceAlertSynthesizer:
     """
-    Physical voice alert synthesizer invoking espeak-ng piped to aplay.
+    Spoken audio synthesizer invoking espeak-ng piped to aplay over ALSA.
+    Features:
+      - Priority Queue (Emergency=0, Warning=1, Info=2)
+      - De-duplication (suppresses identical messages within 30s)
+      - Quiet hours enforcement (suppresses non-emergency alerts during night hours)
     """
 
-    def __init__(
-        self,
-        voice: str = settings.ESPEAK_VOICE,
-        speed: int = settings.ESPEAK_SPEED,
-        alsa_dev: str = settings.ALSA_DEVICE,
-        max_history: int = 50,
-    ):
-        self.voice = voice
-        self.speed = speed
-        self.alsa_dev = alsa_dev
-        self.max_history = max_history
-        self._queue: asyncio.Queue[Dict] = asyncio.Queue()
-        self._history: List[Dict[str, str]] = []
+    def __init__(self):
+        self._queue: Optional[asyncio.Queue[Dict]] = None
         self._running = False
         self._worker_task: Optional[asyncio.Task] = None
         self._last_spoken_text = ""
         self._last_spoken_time = 0.0
+        self._history: List[Dict[str, str]] = []
+        self._has_audio_hardware = False
 
     async def start(self) -> None:
+        """Initializes voice synthesis queue and tests binary availability."""
         if self._running:
             return
+
+        has_espeak = shutil.which("espeak-ng") is not None
+        has_aplay = shutil.which("aplay") is not None
+        self._has_audio_hardware = has_espeak and has_aplay
+
+        if not self._has_audio_hardware:
+            logger.warning(
+                "espeak-ng or aplay not found in system PATH. Voice alerts will be logged to system journal only."
+            )
+
+        self._queue = asyncio.Queue()
         self._running = True
         self._worker_task = asyncio.create_task(self._playback_worker(), name="audio_playback_worker")
-        logger.info("RealAudioDriver initialized. Speech queue worker started.")
+        logger.info("VoiceAlertSynthesizer started.")
 
     async def speak(self, text: str, priority: int = 1) -> None:
         """
-        Enqueues announcement. Debounces identical messages within 30 seconds.
+        Enqueues voice alert.
+        Priority: 0 = Emergency (bypasses quiet hours), 1 = Warning, 2 = Info.
         """
-        if not text or not settings.AUDIO_ENABLED:
+        if not text or not system_config.audio.enabled:
             return
 
         now = time.time()
+        # De-duplicate identical alert within 30 seconds
         if text == self._last_spoken_text and (now - self._last_spoken_time) < 30.0:
             logger.debug("Debouncing duplicate voice alert: %s", text)
             return
 
-        await self._queue.put({"text": text, "priority": priority, "created_at": now})
+        # Quiet hours check
+        if priority > 0 and self._is_in_quiet_hours():
+            logger.info("Quiet hours active: Suppressing voice alert '%s'", text)
+            return
+
+        if self._queue is not None:
+            await self._queue.put({"text": text, "priority": priority, "created_at": now})
+
+    def _is_in_quiet_hours(self) -> bool:
+        """Checks if current time falls within configured quiet hours."""
+        start = system_config.audio.quiet_hours_start
+        end = system_config.audio.quiet_hours_end
+        if start is None or end is None:
+            return False
+
+        current_hour = datetime.now().hour
+        if start < end:
+            return start <= current_hour < end
+        else:
+            # Over midnight (e.g. 22 to 7)
+            return current_hour >= start or current_hour < end
 
     async def _playback_worker(self) -> None:
+        """Processes voice alerts sequentially to prevent audio overlapping."""
         while self._running:
             try:
+                if self._queue is None:
+                    break
                 item = await self._queue.get()
                 text = item["text"]
                 self._last_spoken_text = text
                 self._last_spoken_time = time.time()
 
-                ts = datetime.now(timezone.utc).isoformat()
-                self._history.append({"timestamp": ts, "text": text, "priority": str(item["priority"])})
-                if len(self._history) > self.max_history:
-                    self._history.pop(0)
+                logger.info("[VOICE ALERT P%d] %s", item["priority"], text)
 
-                # Execute espeak-ng pipeline asynchronously:
-                # espeak-ng -v en-us -s 155 "{text}" --stdout | aplay -D default -q
-                cmd = f'espeak-ng -v {self.voice} -s {self.speed} "{text}" --stdout | aplay -D {self.alsa_dev} -q'
-                proc = await asyncio.create_subprocess_shell(
-                    cmd,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await proc.wait()
+                # Execute audio playback if physical tools exist
+                if self._has_audio_hardware:
+                    cfg = system_config.audio
+                    cmd = (
+                        f'espeak-ng -v {cfg.voice} -s {cfg.speed} "{text}" --stdout | '
+                        f'aplay -D {cfg.alsa_device} -q'
+                    )
+                    try:
+                        proc = await asyncio.create_subprocess_shell(
+                            cmd,
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await proc.wait()
+                    except Exception as e:
+                        logger.error("Error invoking ALSA speech pipeline: %s", e)
+
                 self._queue.task_done()
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.error("Error synthesizing voice alert: %s", e)
+            except Exception as exc:
+                logger.error("Error in audio playback worker: %s", exc)
 
     async def stop(self) -> None:
+        """Stops worker and flushes queue."""
         self._running = False
         if self._worker_task and not self._worker_task.done():
             self._worker_task.cancel()
@@ -96,22 +133,8 @@ class RealAudioDriver(BaseAudioController):
                 await self._worker_task
             except asyncio.CancelledError:
                 pass
-        logger.info("RealAudioDriver stopped.")
-
-    def get_recent_speech_logs(self, limit: int = 10) -> List[Dict[str, str]]:
-        return list(reversed(self._history[-limit:]))
+        self._queue = None
+        logger.info("VoiceAlertSynthesizer stopped.")
 
 
-def get_audio_controller() -> BaseAudioController:
-    """Factory selecting physical ALSA voice driver or virtual mock."""
-    has_espeak = shutil.which("espeak-ng") is not None
-    has_aplay = shutil.which("aplay") is not None
-
-    if settings.MOCK_HARDWARE or not has_espeak or not has_aplay:
-        if not settings.MOCK_HARDWARE:
-            logger.warning("espeak-ng or aplay not found in PATH. Using MockAudioController.")
-        return mock_audio
-    return RealAudioDriver()
-
-
-audio_controller = get_audio_controller()
+audio_controller = VoiceAlertSynthesizer()

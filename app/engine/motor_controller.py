@@ -1,0 +1,126 @@
+"""
+Overhead Tank Motor Controller for 25A AC Contactor on Radxa ROCK Pi S.
+Enforces automatic replenishment, hardware interlock checks, and run logging.
+"""
+
+import asyncio
+from datetime import datetime, timezone
+import logging
+import time
+from typing import Optional, Tuple
+from app.alerts.telegram_client import telegram_notifier
+from app.config import system_config
+from app.core.event_bus import bus
+from app.core.state_manager import state_manager
+from app.engine.failsafes import failsafe_engine
+from app.hardware.audio_driver import audio_controller
+from app.hardware.gpio_driver import head_end_gpio
+from app.hardware.rtc import get_monotonic_now
+
+logger = logging.getLogger("smart_water.motor")
+
+
+class MotorController:
+    """
+    Controls the 25A AC contactor relay for overhead tank pumping.
+    """
+
+    def __init__(self):
+        self._started_at_iso: Optional[str] = None
+        self._started_at_mono: Optional[float] = None
+        self._lock = asyncio.Lock()
+
+    async def start_motor(self, is_manual: bool = False, confirm: bool = False) -> Tuple[bool, str]:
+        """
+        Commands the contactor relay ON after rigorous safety verification.
+        Requires confirm=True for manual invocations.
+        """
+        async with self._lock:
+            if is_manual and not confirm:
+                return False, "Manual start requires explicit 'confirm: true' flag."
+
+            state = state_manager.get_state()
+            if state["motor"]["state"] == "RUNNING":
+                return True, "Motor is already running."
+
+            # Verify with failsafe engine
+            allowed, reason = failsafe_engine.can_start_motor(is_manual=is_manual)
+            if not allowed:
+                logger.warning("Motor start rejected: %s", reason)
+                return False, f"Start rejected: {reason}"
+
+            # Energize relay
+            success = await head_end_gpio.set_contactor_relay(True)
+            if not success:
+                return False, "Failed to drive contactor relay pin."
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            self._started_at_iso = now_iso
+            self._started_at_mono = get_monotonic_now()
+            await state_manager.set_motor_state("RUNNING")
+
+            log_msg = f"Overhead pump started ({'MANUAL' if is_manual else 'AUTO'})."
+            logger.info(log_msg)
+            await state_manager.log_event("MOTOR_START", "INFO", log_msg, {"manual": is_manual})
+            await audio_controller.speak("Main water pump energized.", priority=1)
+            await telegram_notifier.send_alert("MOTOR_START", log_msg)
+            await bus.publish("motor:started", {"timestamp": now_iso, "manual": is_manual})
+
+            return True, "Motor energized successfully."
+
+    async def stop_motor(self, reason: str = "manual_stop") -> Tuple[bool, str]:
+        """De-energizes the contactor relay and logs the completed run."""
+        async with self._lock:
+            state = state_manager.get_state()
+            was_running = (state["motor"]["state"] == "RUNNING")
+
+            await head_end_gpio.set_contactor_relay(False)
+            await state_manager.set_motor_state("OFF", reason=reason)
+
+            duration_s = 0
+            if was_running and self._started_at_mono:
+                duration_s = int(get_monotonic_now() - self._started_at_mono)
+                started_iso = self._started_at_iso or datetime.now(timezone.utc).isoformat()
+                await state_manager.log_run("motor.ac", started_iso, duration_s, reason)
+                self._started_at_mono = None
+                self._started_at_iso = None
+
+            log_msg = f"Overhead pump stopped (Reason: {reason}, Duration: {duration_s}s)."
+            logger.info(log_msg)
+            await state_manager.log_event("MOTOR_STOP", "INFO", log_msg, {"reason": reason, "duration_s": duration_s})
+            await bus.publish("motor:stopped", {"reason": reason, "duration_s": duration_s})
+
+            return True, f"Motor de-energized. Ran for {duration_s}s."
+
+    async def evaluate_auto_replenishment(self) -> None:
+        """
+        Evaluates auto-replenishment conditions:
+        Auto-start when:
+          - tank_low_float is True (water level low)
+          - interlock_out is HIGH
+          - auto_mode is True in settings
+          - Not already running
+          - No safety lockouts
+        """
+        state = state_manager.get_state()
+        if not state["motor"]["auto_mode"]:
+            return
+
+        he = state["head_end"]
+        motor = state["motor"]
+
+        # Only evaluate if hardware is configured and not stale
+        if not state["hardware_ready"] or he["is_stale"]:
+            return
+
+        if motor["state"] == "OFF" and he.get("tank_low_float") is True:
+            # Low water condition detected
+            allowed, reason = failsafe_engine.can_start_motor(is_manual=False)
+            if allowed:
+                logger.info("Auto-replenishment triggered: Overhead tank float low.")
+                await self.start_motor(is_manual=False)
+            else:
+                logger.debug("Auto-replenishment suppressed by failsafe: %s", reason)
+
+
+motor_controller = MotorController()

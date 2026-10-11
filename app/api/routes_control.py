@@ -1,200 +1,170 @@
 """
-Actuator Control, Emergency Overrides, Voice Tests, and Hardware Mock Controls.
+Actuator Control Endpoints: Motor, Plant Drip Zones, Probe Calibration, Emergency Stop.
+All actions strictly validated against hardware interlocks and safety policies.
 """
 
-import asyncio
 import logging
 from typing import Any, Dict, Literal, Optional
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, status
-from app.config import settings
-from app.core.event_bus import bus
+from app.config import save_config, system_config
 from app.core.state_manager import state_manager
 from app.engine.failsafes import failsafe_engine
+from app.engine.motor_controller import motor_controller
+from app.engine.plant_controller import plant_controller
 from app.hardware.audio_driver import audio_controller
-from app.hardware.gpio_driver import gpio_controller
-from app.hardware.mock import mock_adc, mock_fluid, mock_gpio
 
 logger = logging.getLogger("smart_water.api.control")
-router = APIRouter(prefix="/api/control", tags=["control"])
+router = APIRouter(prefix="/api", tags=["control"])
 
 
-class PumpControlRequest(BaseModel):
-    target: Literal["pump.zone_1", "pump.zone_2", "pump.zone_3", "pump.zone_4", "motor.ac"] = Field(...)
-    state: bool = Field(..., description="True to turn ON, False to turn OFF")
-    duration_seconds: Optional[int] = Field(default=15, ge=1, le=900, description="Auto-off timer")
-    ignore_cooldown: bool = Field(default=False, description="Manual operator override of 6-hour zone cooldown")
+class MotorStartRequest(BaseModel):
+    confirm: bool = Field(..., description="Explicit confirmation required to energize 230V contactor")
+
+
+class MotorAutoModeRequest(BaseModel):
+    enabled: bool = Field(..., description="Enable or disable automated overhead tank replenishment")
+
+
+class ZoneWaterRequest(BaseModel):
+    duration_seconds: int = Field(default=15, ge=1, le=60, description="Pulse watering duration (1-60s cap)")
+
+
+class ZoneCalibrateRequest(BaseModel):
+    step: Literal["dry", "wet"] = Field(..., description="Calibration step: 'dry' in air, 'wet' in water")
 
 
 class VoiceTestRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=200)
-    priority: int = Field(default=1, ge=1, le=5)
 
 
-class MockTankRequest(BaseModel):
-    level_liters: float = Field(..., ge=0.0, le=1000.0)
+# -----------------------------------------------------------------------------
+# Motor Control Endpoints (Part 2.1)
+# -----------------------------------------------------------------------------
+
+@router.post("/motor/start")
+async def start_motor_manually(payload: MotorStartRequest) -> Dict[str, Any]:
+    """Manually energizes 25A AC contactor after verifying all interlocks."""
+    success, message = await motor_controller.start_motor(is_manual=True, confirm=payload.confirm)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    return {"status": "success", "message": message}
 
 
-class MockReservoirRequest(BaseModel):
-    level_liters: float = Field(..., ge=0.0, le=500.0)
+@router.post("/motor/stop")
+async def stop_motor_manually() -> Dict[str, Any]:
+    """Stops the AC contactor immediately. Manual stop is always permitted."""
+    success, message = await motor_controller.stop_motor(reason="manual_stop")
+    return {"status": "success", "message": message}
 
 
-class MockProbeRequest(BaseModel):
-    channel: int = Field(..., ge=0, le=3)
-    voltage: float = Field(..., ge=0.0, le=5.0)
-
-
-@router.post("/pump")
-async def control_pump(payload: PumpControlRequest) -> Dict[str, Any]:
-    """
-    Manual override switch for DC pumps and AC Contactor.
-    Enforces Priority 0 safety interlocks before granting permission.
-    """
-    target = payload.target
-    state = payload.state
-
-    # 1. AC Contactor Control
-    if target == "motor.ac":
-        if state:
-            allowed, reason = failsafe_engine.can_start_ac_motor()
-            if not allowed:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Safety Lockout: {reason}",
-                )
-
-            await gpio_controller.set_pin(settings.PIN_AC_CONTACTOR, True)
-            await state_manager.update_actuator("ac_contactor", True)
-            await audio_controller.speak("Main pump manually energized.")
-            await bus.publish("manual:ac_motor_on", {"duration": payload.duration_seconds})
-
-            # Auto-off task if duration specified
-            if payload.duration_seconds:
-                async def _auto_off():
-                    await asyncio.sleep(payload.duration_seconds)
-                    await gpio_controller.set_pin(settings.PIN_AC_CONTACTOR, False)
-                    await state_manager.update_actuator("ac_contactor", False)
-                    await audio_controller.speak("Main pump manual timer completed.")
-                asyncio.create_task(_auto_off())
-
-        else:
-            await gpio_controller.set_pin(settings.PIN_AC_CONTACTOR, False)
-            await state_manager.update_actuator("ac_contactor", False)
-            await audio_controller.speak("Main pump manually stopped.")
-            await bus.publish("manual:ac_motor_off", {})
-
-        return {"status": "success", "target": target, "state": state}
-
-    # 2. Plant DC Pumps
-    zone = target.replace("pump.", "")  # 'zone_1'
-    pin_map = {
-        "zone_1": settings.PIN_ZONE_1_MOSFET,
-        "zone_2": settings.PIN_ZONE_2_MOSFET,
-        "zone_3": settings.PIN_ZONE_3_MOSFET,
-        "zone_4": settings.PIN_ZONE_4_MOSFET,
-    }
-    pin = pin_map[zone]
-    pump_name = f"{zone}_pump"
-
-    if state:
-        allowed, reason = failsafe_engine.can_start_zone_pump(zone, ignore_cooldown=payload.ignore_cooldown)
-        if not allowed:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Safety Lockout: {reason}",
-            )
-
-        await gpio_controller.set_pin(pin, True)
-        await state_manager.update_actuator(pump_name, True)
-        await audio_controller.speak(f"Starting {zone.replace('_', ' ')} irrigation pump.")
-        await bus.publish("manual:zone_pump_on", {"zone": zone, "duration": payload.duration_seconds})
-
-        if payload.duration_seconds:
-            async def _zone_auto_off():
-                await asyncio.sleep(payload.duration_seconds)
-                await gpio_controller.set_pin(pin, False)
-                await state_manager.update_actuator(pump_name, False)
-                await audio_controller.speak(f"{zone.replace('_', ' ')} watering cycle finished.")
-            asyncio.create_task(_zone_auto_off())
-    else:
-        await gpio_controller.set_pin(pin, False)
-        await state_manager.update_actuator(pump_name, False)
-        await bus.publish("manual:zone_pump_off", {"zone": zone})
-
-    return {"status": "success", "target": target, "state": state}
-
-
-@router.post("/emergency-stop")
-async def emergency_stop_all() -> Dict[str, Any]:
-    """
-    Panic button: Immediately cuts all physical outputs LOW.
-    """
-    pins = [
-        settings.PIN_AC_CONTACTOR,
-        settings.PIN_ZONE_1_MOSFET,
-        settings.PIN_ZONE_2_MOSFET,
-        settings.PIN_ZONE_3_MOSFET,
-        settings.PIN_ZONE_4_MOSFET,
-    ]
-    for p in pins:
-        await gpio_controller.set_pin(p, False)
-
-    for act in ["ac_contactor", "zone_1_pump", "zone_2_pump", "zone_3_pump", "zone_4_pump"]:
-        await state_manager.update_actuator(act, False)
-
-    await state_manager.log_event("EMERGENCY_STOP", "CRITICAL", "Operator triggered Emergency Stop All.")
-    await audio_controller.speak("Emergency stop activated. All pumps terminated.")
-    await bus.publish("emergency:stop", {})
-
-    return {"status": "success", "message": "All actuators disabled."}
-
-
-@router.post("/reset-lockout")
-async def reset_safety_lockouts() -> Dict[str, Any]:
-    """Manually resets motor timeout lockout and clears active alarms."""
-    failsafe_engine.reset_motor_lockout()
+@router.post("/motor/reset")
+async def reset_motor_lockout() -> Dict[str, Any]:
+    """Clears motor lockout following cooldown expiry."""
+    success, message = failsafe_engine.reset_motor_lockout()
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
     await state_manager.clear_alarm("motor_timeout")
-    await audio_controller.speak("System lockouts reset by operator.")
-    return {"status": "success", "message": "Lockouts reset."}
+    await audio_controller.speak("Main motor safety lockout reset by operator.", priority=1)
+    return {"status": "success", "message": "Motor lockout cleared."}
 
 
-@router.post("/speak")
-async def test_voice_speech(payload: VoiceTestRequest) -> Dict[str, Any]:
-    """Enqueues test phrase on USB ALSA speaker."""
-    await audio_controller.speak(payload.text, priority=payload.priority)
-    await state_manager.set_last_speech(payload.text)
-    return {"status": "success", "enqueued": payload.text}
+@router.post("/motor/auto-mode")
+async def set_motor_auto_mode(payload: MotorAutoModeRequest) -> Dict[str, Any]:
+    """Toggles automatic replenishment of overhead water tank."""
+    await state_manager.set_motor_auto_mode(payload.enabled)
+    save_config(system_config)
+    return {"status": "success", "auto_mode": payload.enabled}
 
 
 # -----------------------------------------------------------------------------
-# Virtual Hardware Simulation Injection Endpoints
+# Plant Irrigation Zones Endpoints (Part 2.2)
 # -----------------------------------------------------------------------------
 
-@router.post("/mock/set-tank")
-async def set_mock_overhead_tank(payload: MockTankRequest) -> Dict[str, Any]:
-    mock_fluid.overhead_tank_liters = payload.level_liters
-    mock_fluid.step()
-    return {"status": "success", "overhead_tank_liters": mock_fluid.overhead_tank_liters}
+@router.post("/zones/{zone_id}/water")
+async def water_zone(zone_id: str, payload: ZoneWaterRequest) -> Dict[str, Any]:
+    """Triggers precision pulse watering on wireless garden zone (1..4)."""
+    success, message = await plant_controller.trigger_zone_pulse(
+        zone_key=zone_id,
+        duration_s=payload.duration_seconds,
+        is_manual=True,
+        source="manual_override",
+    )
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    return {"status": "success", "message": message}
 
 
-@router.post("/mock/set-reservoir")
-async def set_mock_reservoir(payload: MockReservoirRequest) -> Dict[str, Any]:
-    mock_fluid.reservoir_liters = payload.level_liters
-    mock_fluid.step()
-    return {"status": "success", "reservoir_liters": mock_fluid.reservoir_liters}
+@router.post("/zones/{zone_id}/stop")
+async def stop_zone(zone_id: str) -> Dict[str, Any]:
+    """Stops active pulse on specified zone."""
+    success, message = await plant_controller.stop_zone_pulse(zone_key=zone_id, reason="manual_stop")
+    return {"status": "success", "message": message}
 
 
-@router.post("/mock/set-probe")
-async def set_mock_probe_voltage(payload: MockProbeRequest) -> Dict[str, Any]:
-    mock_adc.set_channel_override(payload.channel, payload.voltage)
-    return {"status": "success", "channel": payload.channel, "voltage": payload.voltage}
+@router.post("/zones/stop-all")
+async def stop_all_zones() -> Dict[str, Any]:
+    """Dispatches emergency stop to all plant drip zones."""
+    await plant_controller.stop_all_zones(reason="manual_stop_all")
+    return {"status": "success", "message": "All plant pumps commanded OFF."}
 
 
-@router.post("/mock/reset-physics")
-async def reset_mock_physics() -> Dict[str, Any]:
-    mock_fluid.overhead_tank_liters = 500.0
-    mock_fluid.reservoir_liters = 400.0
-    for ch in range(4):
-        mock_adc.clear_channel_override(ch)
-    mock_fluid.step()
-    return {"status": "success", "message": "Physics reset to baseline values."}
+@router.post("/zones/{zone_id}/calibrate")
+async def calibrate_zone_probe(zone_id: str, payload: ZoneCalibrateRequest) -> Dict[str, Any]:
+    """
+    Calibrates capacitive soil probe (Part 2.2):
+    Captures live voltage as dry_v (in air) or wet_v (submerged in water).
+    Saves calibration to /etc/smart-water/config.yaml.
+    """
+    state = state_manager.get_state()
+    z_data = state["garden"]["zones"].get(zone_id)
+    if not z_data or z_data.get("voltage") is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot calibrate {zone_id}: No live voltage telemetry received from garden node yet.",
+        )
+
+    current_v = z_data["voltage"]
+    z_cfg = system_config.zones.get(zone_id)
+    if not z_cfg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Zone {zone_id} not configured.")
+
+    if payload.step == "dry":
+        z_cfg.calibration.dry_v = current_v
+    elif payload.step == "wet":
+        z_cfg.calibration.wet_v = current_v
+
+    save_config(system_config)
+    log_msg = f"Zone {zone_id} calibrated {payload.step.upper()} voltage captured at {current_v:.3f}V."
+    logger.info(log_msg)
+    await state_manager.log_event("CALIBRATION_UPDATE", "INFO", log_msg)
+
+    return {
+        "status": "success",
+        "zone_id": zone_id,
+        "step": payload.step,
+        "captured_volts": current_v,
+        "dry_v": z_cfg.calibration.dry_v,
+        "wet_v": z_cfg.calibration.wet_v,
+    }
+
+
+# -----------------------------------------------------------------------------
+# Panic Emergency Stop & Voice Alerts
+# -----------------------------------------------------------------------------
+
+@router.post("/control/emergency-stop")
+async def emergency_stop_all() -> Dict[str, Any]:
+    """Panic Button: Cuts contactor relay and stops all plant pumps immediately."""
+    await motor_controller.stop_motor(reason="emergency_stop")
+    await plant_controller.stop_all_zones(reason="emergency_stop")
+    await state_manager.log_event("EMERGENCY_STOP", "CRITICAL", "Operator activated Emergency Stop.")
+    await audio_controller.speak("Emergency stop activated. All outputs killed.", priority=0)
+    return {"status": "success", "message": "Emergency stop executed. All outputs de-energized."}
+
+
+@router.post("/control/speak")
+async def test_voice_alert(payload: VoiceTestRequest) -> Dict[str, Any]:
+    """Queues voice announcement for testing ALSA audio interface."""
+    await audio_controller.speak(payload.text, priority=1)
+    return {"status": "success", "message": f"Queued announcement: '{payload.text}'"}

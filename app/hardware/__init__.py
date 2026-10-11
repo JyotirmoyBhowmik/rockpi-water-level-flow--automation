@@ -1,4 +1,5 @@
 """
 Hardware driver subsystem for Radxa ROCK Pi S.
-Includes native libgpiod, ADS1115 I2C, ALSA audio, and full virtual mock layers.
+Includes native libgpiod for optocoupled inputs & contactor relay, DS3231 RTC, USB serial gateway, and ALSA audio.
 """
+

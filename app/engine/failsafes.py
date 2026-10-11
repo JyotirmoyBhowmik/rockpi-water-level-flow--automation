@@ -1,201 +1,286 @@
 """
-Non-Bypassable Hardcoded Safety Interlocks (Priority 0).
-Hardened for industrial reliability and equipment protection on Rock Pi S.
+Non-Bypassable Hardcoded Failsafes and Interlock Logic for Radxa ROCK Pi S Controller.
+Enforces hardware interlock chain cause logic, motor protection, and plant irrigation guards.
 """
 
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional, Set, Tuple
-from app.config import settings
+from typing import Any, Dict, List, Optional, Tuple
+from app.alerts.telegram_client import telegram_notifier
+from app.config import system_config
 from app.core.event_bus import bus
 from app.core.state_manager import state_manager
 from app.hardware.audio_driver import audio_controller
-from app.hardware.gpio_driver import gpio_controller
+from app.hardware.gateway_driver import garden_gateway
+from app.hardware.gpio_driver import head_end_gpio
+from app.hardware.rtc import get_monotonic_now, is_system_clock_valid
 
 logger = logging.getLogger("smart_water.failsafes")
 
 
-class FailsafeEngine:
+class FailsafeSafetyEngine:
     """
-    Priority 0 Safety Guardian.
-    Guarantees physical safety constraints are continuously enforced
-    regardless of user rules, manual overrides, or external API commands.
+    Comprehensive industrial safety guardian.
+    Evaluates physical interlock chain, motor limits, link loss, and sensor sanity bands.
     """
 
     def __init__(self):
-        self.motor_lockout_active = False
-        self.dry_run_lockout_active = False
-        self.tank_high_lockout_active = False
-        self.faulty_probes: Set[str] = set()
+        self.wiring_fault_active = False
+        self.motor_timeout_tripped = False
+        self.motor_cooldown_until: float = 0.0
+        self.manual_motor_lockout = False
+        self.leak_alarm_active = False
+        self.flow_faults: Dict[str, bool] = {f"zone_{i}": False for i in range(1, 5)}
+        self._zone_run_start_mono: Dict[str, Optional[float]] = {f"zone_{i}": None for i in range(1, 5)}
+        self._zone_pulses_start: Dict[str, int] = {f"zone_{i}": 0 for i in range(1, 5)}
 
-    async def evaluate_safety_interlocks(
-        self,
-        tank_low: bool,
-        tank_high: bool,
-        reservoir_empty: bool,
-        soil_voltages: Dict[str, float],
-    ) -> Dict[str, bool]:
+    # -------------------------------------------------------------------------
+    # 1. Head-End Interlock Chain & Motor Cut-off Logic
+    # -------------------------------------------------------------------------
+
+    async def evaluate_head_end_safety(self) -> Dict[str, Any]:
         """
-        Executes all Priority 0 checks against current physical inputs.
-        Directly commands GPIO lines LOW if an unsafe condition is detected.
-        Returns a dictionary of active lockout flags.
+        Evaluates head-end inputs from PC817 opto board:
+          - Leak detection
+          - Hardware interlock chain cause logic
+          - Max continuous motor runtime guard
         """
+        state = state_manager.get_state()
+        he = state["head_end"]
+        motor = state["motor"]
         now = time.time()
-        current_state = state_manager.get_state()
-        actuators = current_state["actuators"]
-        tracking = current_state["runtime_tracking"]
+        mono_now = get_monotonic_now()
 
-        # =====================================================================
-        # 1. DRY-RUN LOCKOUT (Reservoir Empty)
-        # =====================================================================
-        if reservoir_empty:
-            self.dry_run_lockout_active = True
-            await state_manager.set_alarm("dry_run", "Irrigation reservoir empty. DC pumps locked.")
-
-            # Force all 4 DC pumps OFF immediately
-            zone_pins = [
-                ("zone_1_pump", settings.PIN_ZONE_1_MOSFET),
-                ("zone_2_pump", settings.PIN_ZONE_2_MOSFET),
-                ("zone_3_pump", settings.PIN_ZONE_3_MOSFET),
-                ("zone_4_pump", settings.PIN_ZONE_4_MOSFET),
-            ]
-            for pump_name, pin in zone_pins:
-                if actuators.get(pump_name, False):
-                    await gpio_controller.set_pin(pin, False)
-                    await state_manager.update_actuator(pump_name, False)
-                    logger.warning("Failsafe P0: Cut %s due to dry-run condition.", pump_name)
-
-            await audio_controller.speak("Warning: Irrigation reservoir is empty. Plant pumps locked.")
-            await bus.publish("failsafe:dry_run", {"active": True})
+        # 1. Leak Detection Guard
+        if he.get("leak_detected") is True:
+            if not self.leak_alarm_active:
+                self.leak_alarm_active = True
+                await state_manager.set_alarm("leak", "LEAK DETECTED: Water present around manifold or floor.")
+                await head_end_gpio.set_contactor_relay(False)
+                await state_manager.set_motor_state("OFF", reason="leak_detected")
+                await garden_gateway.send_stop_all()
+                await audio_controller.speak("Emergency: Water leak detected. All pumps stopped.", priority=0)
+                await telegram_notifier.send_alert("LEAK_DETECTED", "Water leak detected on head-end sensor. All outputs killed.")
+                logger.critical("SAFETY INTERLOCK: Leak sensor tripped! All pumps killed.")
         else:
-            if self.dry_run_lockout_active:
-                self.dry_run_lockout_active = False
-                await state_manager.clear_alarm("dry_run")
-                logger.info("Failsafe: Reservoir refilled. Dry-run lockout cleared.")
+            if self.leak_alarm_active:
+                self.leak_alarm_active = False
+                await state_manager.clear_alarm("leak")
+                logger.info("Leak sensor cleared.")
 
-        # =====================================================================
-        # 2. OVERHEAD TANK HIGH CUTOFF (Tank Full)
-        # =====================================================================
-        if tank_high:
-            self.tank_high_lockout_active = True
-            await state_manager.set_alarm("tank_full", "Overhead tank high-level reached.")
+        # 2. Hardware Interlock Chain Cause Logic
+        cause = he.get("interlock_cause")
+        if cause == "wiring_fault":
+            self.wiring_fault_active = True
+            await state_manager.set_alarm("wiring_fault", "CRITICAL WIRING FAULT: interlock_out HIGH while interlock_mid LOW.")
+            if motor["state"] == "RUNNING":
+                await head_end_gpio.set_contactor_relay(False)
+                await state_manager.set_motor_state("OFF", reason="wiring_fault")
+                await audio_controller.speak("Critical wiring fault detected in interlock chain. Motor locked.", priority=0)
+                await telegram_notifier.send_alert("WIRING_FAULT", "Impossible interlock state (out=HIGH, mid=LOW). Motor locked.")
+        elif cause in ("tank_full", "dry_sump"):
+            if motor["state"] == "RUNNING":
+                await head_end_gpio.set_contactor_relay(False)
+                stop_reason = "tank_full" if cause == "tank_full" else "dry_sump"
+                await state_manager.set_motor_state("OFF", reason=stop_reason)
+                msg = "Tank full: Motor shut off by hardware float." if cause == "tank_full" else "Dry sump: Motor shut off."
+                await audio_controller.speak(msg, priority=1)
+                await telegram_notifier.send_alert("MOTOR_STOP", msg)
+                logger.info("Motor shut off by hardware interlock (%s)", cause)
 
-            if actuators.get("ac_contactor", False):
-                await gpio_controller.set_pin(settings.PIN_AC_CONTACTOR, False)
-                await state_manager.update_actuator("ac_contactor", False)
-                logger.warning("Failsafe P0: Overhead tank full. Cut AC contactor.")
-                await audio_controller.speak("Overhead tank full. Main pump shut off.")
-                await bus.publish("failsafe:tank_high", {"active": True})
-        else:
-            if self.tank_high_lockout_active:
-                self.tank_high_lockout_active = False
-                await state_manager.clear_alarm("tank_full")
+        # 3. Max Continuous Motor Runtime Guard (Monotonic Timer)
+        if motor["state"] == "RUNNING":
+            started_mono = state_manager._state["motor"]["started_at_monotonic"]
+            if started_mono:
+                runtime_s = mono_now - started_mono
+                if runtime_s >= system_config.motor.max_runtime_s:
+                    self.motor_timeout_tripped = True
+                    self.manual_motor_lockout = True
+                    self.motor_cooldown_until = now + system_config.motor.cooldown_s
+                    await head_end_gpio.set_contactor_relay(False)
+                    await state_manager.set_motor_state("COOLDOWN_LOCKED", reason="max_runtime_trip")
+                    await state_manager.set_motor_cooldown(self.motor_cooldown_until)
+                    await state_manager.set_motor_manual_lock(True)
 
-        # =====================================================================
-        # 3. MAX MOTOR RUNTIME GUARD (15 min continuous limit)
-        # =====================================================================
-        ac_started = tracking.get("ac_contactor_started_at")
-        if actuators.get("ac_contactor", False) and ac_started is not None:
-            runtime = now - ac_started
-            if runtime > settings.MAX_AC_MOTOR_RUNTIME_SEC:
-                self.motor_lockout_active = True
-                await gpio_controller.set_pin(settings.PIN_AC_CONTACTOR, False)
-                await state_manager.update_actuator("ac_contactor", False)
-                await state_manager.set_alarm(
-                    "motor_timeout",
-                    f"AC Motor ran {int(runtime)}s (max {settings.MAX_AC_MOTOR_RUNTIME_SEC}s). Lockout active.",
-                )
-                logger.error("Failsafe P0: Max motor runtime exceeded (%ds). Lockout engaged.", int(runtime))
-                await audio_controller.speak("Emergency: Main pump continuous runtime exceeded fifteen minutes.")
-                await bus.publish("failsafe:motor_timeout", {"runtime_seconds": runtime})
-
-        # =====================================================================
-        # 4. OUT-OF-BOUNDS SENSOR GUARD (<0.5V or >3.0V)
-        # =====================================================================
-        active_faulty_probes = set()
-        for zone, voltage in soil_voltages.items():
-            if voltage < settings.SENSOR_VOLTAGE_MIN_V or voltage > settings.SENSOR_VOLTAGE_MAX_V:
-                active_faulty_probes.add(zone)
-                alarm_key = f"probe_fault_{zone}"
-                await state_manager.set_alarm(
-                    alarm_key,
-                    f"Probe {zone} reading out-of-bounds: {voltage:.2f}V (Safe: {settings.SENSOR_VOLTAGE_MIN_V}-{settings.SENSOR_VOLTAGE_MAX_V}V)",
-                )
-                # If zone pump is running, cut it
-                pump_name = f"{zone}_pump"
-                pin_map = {
-                    "zone_1_pump": settings.PIN_ZONE_1_MOSFET,
-                    "zone_2_pump": settings.PIN_ZONE_2_MOSFET,
-                    "zone_3_pump": settings.PIN_ZONE_3_MOSFET,
-                    "zone_4_pump": settings.PIN_ZONE_4_MOSFET,
-                }
-                if actuators.get(pump_name, False):
-                    pin = pin_map[pump_name]
-                    await gpio_controller.set_pin(pin, False)
-                    await state_manager.update_actuator(pump_name, False)
-                    logger.warning("Failsafe P0: Cut %s due to sensor fault (%0.2fV).", pump_name, voltage)
-
-                if zone not in self.faulty_probes:
-                    await audio_controller.speak(f"Alert: Soil moisture probe in {zone.replace('_', ' ')} out of bounds.")
-            else:
-                alarm_key = f"probe_fault_{zone}"
-                await state_manager.clear_alarm(alarm_key)
-
-        self.faulty_probes = active_faulty_probes
-
-        # Update aggregated status in StateManager
-        await state_manager.update_failsafe_status(
-            dry_run=self.dry_run_lockout_active,
-            tank_high=self.tank_high_lockout_active,
-            motor_timeout=self.motor_lockout_active,
-            faulty_probes=list(self.faulty_probes),
-        )
+                    alarm_msg = (
+                        f"Motor exceeded max runtime ({int(runtime_s)}s). "
+                        f"Cooldown active for {int(system_config.motor.cooldown_s / 60)}m. Manual reset required."
+                    )
+                    await state_manager.set_alarm("motor_timeout", alarm_msg)
+                    await audio_controller.speak("Emergency: Main pump continuous runtime exceeded. Lockout active.", priority=0)
+                    await telegram_notifier.send_alert("MOTOR_MAX_RUNTIME", alarm_msg)
+                    logger.error("SAFETY INTERLOCK: %s", alarm_msg)
 
         return {
-            "dry_run_locked": self.dry_run_lockout_active,
-            "tank_high_locked": self.tank_high_lockout_active,
-            "motor_timeout_locked": self.motor_lockout_active,
-            "faulty_probes": list(self.faulty_probes),
+            "wiring_fault": self.wiring_fault_active,
+            "leak_active": self.leak_alarm_active,
+            "motor_timeout_tripped": self.motor_timeout_tripped,
+            "motor_cooldown_until": self.motor_cooldown_until,
+            "manual_motor_lockout": self.manual_motor_lockout,
         }
 
-    # =========================================================================
-    # Authorization checks for incoming actuation commands
-    # =========================================================================
+    # -------------------------------------------------------------------------
+    # 2. Motor Start Authorization Check
+    # -------------------------------------------------------------------------
 
-    def can_start_ac_motor(self) -> Tuple[bool, Optional[str]]:
-        """Verify whether AC Contactor can safely be energized."""
-        if self.motor_lockout_active:
-            return False, "AC Motor locked out due to continuous runtime guard. Manual reset required."
-        if self.tank_high_lockout_active:
-            return False, "Cannot start AC Motor: Overhead tank is already full."
+    def can_start_motor(self, is_manual: bool = False) -> Tuple[bool, Optional[str]]:
+        """
+        Determines whether the AC Contactor motor may be started.
+        Enforces:
+          - Head-end hardware available
+          - Data not stale (< 15s)
+          - No leak detected
+          - No wiring fault
+          - Interlock chain healthy (interlock_out == True and interlock_mid == True)
+          - Not locked by max-runtime trip or in cooldown
+          - Tank not already full
+        """
+        state = state_manager.get_state()
+        he = state["head_end"]
+        motor = state["motor"]
+        now = time.time()
+
+        if not state["hardware_ready"] or not he["configured"]:
+            return False, "Head-end hardware is unconfigured or not connected (SAFE-NO-HARDWARE)."
+
+        if he["is_stale"]:
+            return False, "Head-end input telemetry is STALE (>15s). Motor start locked for safety."
+
+        if self.leak_alarm_active or he.get("leak_detected") is True:
+            return False, "Leak sensor is tripped. Motor locked."
+
+        if self.wiring_fault_active or he.get("interlock_cause") == "wiring_fault":
+            return False, "Wiring fault detected in hardware interlock chain. Motor locked."
+
+        if self.manual_motor_lockout:
+            return False, "Motor is locked due to previous max-runtime trip. Manual reset required via UI/API."
+
+        if self.motor_cooldown_until > now:
+            remaining_m = int((self.motor_cooldown_until - now) / 60)
+            return False, f"Motor is cooling down ({remaining_m}m remaining). Start locked."
+
+        cause = he.get("interlock_cause")
+        if cause == "tank_full":
+            return False, "Overhead tank is already full (Full float open)."
+        if cause == "dry_sump":
+            return False, "Source sump is empty (Sump float open)."
+        if cause != "healthy":
+            return False, f"Hardware interlock chain is not complete (Cause: {cause})."
+
         return True, None
 
-    def can_start_zone_pump(self, zone: str, ignore_cooldown: bool = False) -> Tuple[bool, Optional[str]]:
-        """Verify whether a plant drip pump can safely be energized."""
-        if self.dry_run_lockout_active:
-            return False, "Cannot start irrigation: Ground reservoir is empty (Dry-Run Lockout)."
-        if zone in self.faulty_probes:
-            return False, f"Cannot start irrigation for {zone}: Capacitive probe reading is out-of-bounds."
+    def reset_motor_lockout(self) -> Tuple[bool, Optional[str]]:
+        """Resets motor lockout after cooldown period expires."""
+        now = time.time()
+        if self.motor_cooldown_until > now:
+            rem = int((self.motor_cooldown_until - now) / 60)
+            return False, f"Cooldown still active ({rem} minutes remaining)."
 
-        # 5. Zone Cooldown Check (minimum 6 hours to prevent root rot)
-        if not ignore_cooldown:
-            state = state_manager.get_state()
-            cooldown_until = state["runtime_tracking"]["zone_cooldown_until"].get(zone, 0.0)
-            now = time.time()
+        self.motor_timeout_tripped = False
+        self.manual_motor_lockout = False
+        self.wiring_fault_active = False
+        logger.info("Motor safety lockouts cleared by operator.")
+        return True, None
+
+    # -------------------------------------------------------------------------
+    # 3. Garden Plant Irrigation Safety Checks
+    # -------------------------------------------------------------------------
+
+    def can_water_zone(self, zone_key: str, is_manual: bool = False) -> Tuple[bool, Optional[str]]:
+        """
+        Determines whether a plant drip pump may be energized:
+          - Gateway must be online and telemetry not stale (< 90s)
+          - Reservoir must be wet (reservoir_wet == True)
+          - Probe must be calibrated (dry_v and wet_v set)
+          - Probe voltage must be within sanity band [wet_v - margin, dry_v + margin]
+          - Zone not in 6h cooldown (unless manual pulse)
+          - System clock must be valid (if invalid, blocks auto-watering)
+          - Zone not flagged with flow fault
+        """
+        state = state_manager.get_state()
+        g = state["garden"]
+        now = time.time()
+
+        # Gateway & Staleness Check
+        if not g["gateway_connected"] or not g["node_online"] or g["is_stale"]:
+            return False, "Garden node telemetry is STALE or link lost (>90s). Plant watering locked."
+
+        # Reservoir Empty Check
+        if g.get("reservoir_wet") is not True:
+            return False, "Irrigation reservoir is dry. DC pumps locked."
+
+        # Clock Validity Check (Part 2.3)
+        if not is_system_clock_valid() and not is_manual:
+            return False, "System clock is invalid (un-synced). Automatic watering blocked."
+
+        # Zone Configuration & Calibration Check (Part 2.2)
+        z_cfg = system_config.zones.get(zone_key)
+        if not z_cfg:
+            return False, f"Zone '{zone_key}' is not defined in configuration."
+
+        if not z_cfg.enabled and not is_manual:
+            return False, f"Zone '{zone_key}' is disabled."
+
+        cal = z_cfg.calibration
+        if cal.dry_v is None or cal.wet_v is None:
+            return False, f"Zone '{zone_key}' probe is uncalibrated. Auto-watering disallowed."
+
+        # Probe Sanity Band Check
+        z_state = g["zones"].get(zone_key, {})
+        volts = z_state.get("voltage")
+        if volts is not None:
+            min_valid = min(cal.wet_v, cal.dry_v) - cal.margin_v
+            max_valid = max(cal.wet_v, cal.dry_v) + cal.margin_v
+            if volts < min_valid or volts > max_valid:
+                return False, f"Probe voltage ({volts:.2f}V) outside sanity band [{min_valid:.2f}V - {max_valid:.2f}V]."
+
+        # Flow Meter Fault Check
+        if self.flow_faults.get(zone_key, False):
+            return False, f"Zone '{zone_key}' has active NO FLOW fault. Inspection required."
+
+        # Cooldown Check (unless manual)
+        if not is_manual:
+            cooldown_until = z_state.get("cooldown_until_ts", 0.0)
             if cooldown_until > now:
-                remaining_min = int((cooldown_until - now) / 60)
-                return (
-                    False,
-                    f"Zone {zone} in cooldown protection ({remaining_min}m remaining). Prevents root rot.",
-                )
+                rem_h = round((cooldown_until - now) / 3600.0, 1)
+                return False, f"Zone in cooldown protection ({rem_h}h remaining) to prevent root rot."
 
         return True, None
 
-    def reset_motor_lockout(self) -> None:
-        """Manual operator reset for motor timeout lockout."""
-        self.motor_lockout_active = False
-        logger.info("Operator manually reset AC Motor lockout.")
+    def on_pump_started(self, zone_key: str, initial_pulses: int = 0) -> None:
+        """Records start of pump run for flow verification."""
+        self._zone_run_start_mono[zone_key] = get_monotonic_now()
+        self._zone_pulses_start[zone_key] = initial_pulses
+
+    async def check_flow_meter_health(self, zone_key: str, current_pulses: int) -> None:
+        """
+        Flow check (Part 2.2):
+        If zone has flow meter and pump has run 10s with fewer pulses than min_pulses_10s,
+        raise NO FLOW, lock zone, and alert.
+        """
+        z_cfg = system_config.zones.get(zone_key)
+        if not z_cfg or not z_cfg.has_flow_meter:
+            return
+
+        start_mono = self._zone_run_start_mono.get(zone_key)
+        if start_mono is None:
+            return
+
+        run_time = get_monotonic_now() - start_mono
+        if run_time >= 10.0:
+            accumulated = current_pulses - self._zone_pulses_start.get(zone_key, 0)
+            if accumulated < z_cfg.min_pulses_10s:
+                self.flow_faults[zone_key] = True
+                await state_manager.set_zone_flow_fault(zone_key, True)
+                # Cut pump immediately
+                zone_idx = int(zone_key.split("_")[-1])
+                await garden_gateway.send_pump_stop(zone_idx)
+                msg = f"NO FLOW DETECTED on {zone_key} after 10s ({accumulated} pulses < {z_cfg.min_pulses_10s}). Pump locked."
+                await state_manager.set_alarm(f"no_flow_{zone_key}", msg)
+                await audio_controller.speak(f"Alert: No water flow detected in {zone_key.replace('_', ' ')}. Pump locked.", priority=0)
+                await telegram_notifier.send_alert("NO_FLOW", msg)
+                logger.error("SAFETY INTERLOCK: %s", msg)
 
 
-failsafe_engine = FailsafeEngine()
+failsafe_engine = FailsafeSafetyEngine()

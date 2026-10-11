@@ -6,14 +6,12 @@
   <title>Radxa Smart Water & Precision Irrigation Controller</title>
   <link rel="stylesheet" href="/static/css/vendor.min.css">
   <style>
-    /* Clean System Polish */
     .pulse-dot {
       display: inline-block;
       width: 8px;
       height: 8px;
       border-radius: 50%;
       background: #10b981;
-      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
       animation: pulse 1.6s infinite;
     }
     @keyframes pulse {
@@ -21,6 +19,8 @@
       70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
       100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
     }
+    .wizard-step { display: none; }
+    .wizard-step.active { display: block; }
   </style>
 </head>
 <body>
@@ -36,22 +36,21 @@
             Radxa ROCK Pi S Controller
           </h1>
           <p style="font-size: 0.75rem; color: #64748b; margin: 0;">
-            RK3308 Armbian &bull; Domestic Overhead Tank &amp; 4-Zone Drip System
+            Hybrid Head-End + Wireless ESP32 Garden Node &bull; RAM Budget &lt; 35 MB
           </p>
         </div>
       </div>
 
-      <!-- Status Indicators -->
+      <!-- Live Status Badges -->
       <div class="flex items-center gap-2 flex-wrap">
-        <div class="badge badge-green" id="badge-mesh">
-          <span class="pulse-dot"></span>
-          Tailscale Mesh Active
+        <div class="badge badge-gray" id="badge-system-status">
+          SAFE-NO-HARDWARE
         </div>
-        <div class="badge badge-blue" id="badge-mode">
-          Hardware Mock Mode
+        <div class="badge badge-gray" id="badge-interlock-status">
+          Interlock: Not configured
         </div>
-        <div class="badge badge-gray" id="badge-watchdog">
-          Watchdog OK
+        <div class="badge badge-gray" id="badge-garden-link">
+          Garden Node: Disconnected
         </div>
         <div class="badge badge-gray" id="badge-uptime">
           Uptime: 0s
@@ -63,390 +62,319 @@
     </div>
   </header>
 
-  <!-- Main Container -->
+  <!-- Main Workspace Container -->
   <main class="container">
-    <!-- Active Alarms Banner (Hidden when no alarms) -->
-    <div id="alarms-banner" style="display: none; background: #fef2f2; border: 1px solid #fecaca; border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 1.25rem;">
+    <!-- Active Alarms Banner -->
+    <div id="alarms-banner" style="display: none; background: #fef2f2; border: 1px solid #fecaca; border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 1rem;">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span style="font-size: 18px;">⚠️</span>
           <div>
-            <strong style="color: #991b1b; font-size: 14px;">Active Safety Interlocks:</strong>
-            <span id="alarms-text" style="color: #b91c1c; font-size: 13px; margin-left: 6px;"></span>
+            <strong style="color: #991b1b; font-size: 13px;">Active Safety Interlocks:</strong>
+            <span id="alarms-text" style="color: #b91c1c; font-size: 12px; margin-left: 6px;"></span>
           </div>
         </div>
-        <button class="btn btn-secondary btn-sm" onclick="resetLockouts()">Reset Lockout</button>
+        <button class="btn btn-secondary btn-sm" onclick="resetMotorLockout()">Reset Lockout</button>
+      </div>
+    </div>
+
+    <!-- First-Run Setup Wizard Alert Banner (Shown when setup_complete is false) -->
+    <div id="wizard-alert-banner" style="display: none; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 1rem;">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span>🚀</span>
+          <div>
+            <strong style="color: #0369a1; font-size: 13px;">First-Run Commissioning Wizard:</strong>
+            <span style="font-size: 12px; color: #0284c7; margin-left: 4px;">Hardware is unconfigured or awaiting verification tests.</span>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="switchTab('tab-wizard', document.getElementById('btn-nav-wizard'))">
+          Open Setup Wizard
+        </button>
       </div>
     </div>
 
     <!-- Navigation Tabs -->
     <nav class="nav-tabs">
-      <button class="nav-tab-btn active" onclick="switchTab('tab-circuit', this)">
-        🎛️ Topology &amp; Telemetry
+      <button class="nav-tab-btn active" id="btn-nav-circuit" onclick="switchTab('tab-circuit', this)">
+        🎛️ Hybrid Topology &amp; Telemetry
       </button>
-      <button class="nav-tab-btn" onclick="switchTab('tab-rules', this)">
+      <button class="nav-tab-btn" id="btn-nav-rules" onclick="switchTab('tab-rules', this)">
         ⚡ Rule Studio
       </button>
-      <button class="nav-tab-btn" onclick="switchTab('tab-control', this)">
-        🕹️ Manual Overrides
+      <button class="nav-tab-btn" id="btn-nav-control" onclick="switchTab('tab-control', this)">
+        🕹️ Manual Controls &amp; Calibration
       </button>
-      <button class="nav-tab-btn" onclick="switchTab('tab-simulation', this)">
-        🧪 Simulation Lab
+      <button class="nav-tab-btn" id="btn-nav-wizard" onclick="switchTab('tab-wizard', this)">
+        🧙 Commissioning Wizard
       </button>
-      <button class="nav-tab-btn" onclick="switchTab('tab-logs', this)">
-        📜 Voice &amp; Audit Logs
+      <button class="nav-tab-btn" id="btn-nav-settings" onclick="switchTab('tab-settings', this)">
+        ⚙️ Settings (/etc/smart-water)
+      </button>
+      <button class="nav-tab-btn" id="btn-nav-journal" onclick="switchTab('tab-journal', this)">
+        📜 Events &amp; Database Backup
       </button>
     </nav>
 
     <!-- ================================================================= -->
-    <!-- TAB 1: CIRCUIT TOPOLOGY & LIVE TELEMETRY                          -->
+    <!-- TAB 1: HYBRID CIRCUIT TOPOLOGY & TELEMETRY                        -->
     <!-- ================================================================= -->
     <section id="tab-circuit" class="tab-pane">
       <div class="grid grid-cols-1 md:grid-cols-4 gap-4" style="margin-bottom: 1.25rem;">
-        <!-- Overhead Tank Gauge -->
+        <!-- Card 1: Overhead Tank & Interlock Chain -->
         <div class="card">
           <div class="card-header">
-            <span style="font-size: 13px; font-weight: 600; color: #475569;">Overhead Tank (1000L)</span>
-            <span class="badge badge-blue" id="gauge-tank-status">NORMAL</span>
+            <span style="font-size: 12px; font-weight: 600; color: #475569;">Overhead Tank (Head-End)</span>
+            <span class="badge badge-gray" id="gauge-interlock-cause">UNCONFIGURED</span>
           </div>
-          <div class="flex items-baseline gap-2">
-            <span style="font-size: 1.75rem; font-weight: 800; color: #0284c7;" id="gauge-tank-val">58%</span>
-            <span style="font-size: 12px; color: #64748b;">(580 Liters)</span>
+          <div style="font-size: 13px; font-weight: 700; color: #0f172a;" id="gauge-tank-low-text">
+            Low Float: <span style="color:#94a3b8;">No reading yet</span>
           </div>
-          <div style="margin-top: 8px; font-size: 11px; color: #64748b;" id="gauge-tank-floats">
-            High Float: OPEN &bull; Low Float: SUBMERGED
+          <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
+            Hardware Interlock: Full Float (NC) &rarr; Sump Float (NO)
           </div>
         </div>
 
-        <!-- Irrigation Reservoir Gauge -->
+        <!-- Card 2: 25A AC Contactor Motor -->
         <div class="card">
           <div class="card-header">
-            <span style="font-size: 13px; font-weight: 600; color: #475569;">Ground Reservoir (500L)</span>
-            <span class="badge badge-green" id="gauge-reservoir-status">AMPLE</span>
+            <span style="font-size: 12px; font-weight: 600; color: #475569;">25A AC Contactor</span>
+            <span class="badge badge-gray" id="gauge-motor-badge">OFF</span>
           </div>
           <div class="flex items-baseline gap-2">
-            <span style="font-size: 1.75rem; font-weight: 800; color: #059669;" id="gauge-reservoir-val">76%</span>
-            <span style="font-size: 12px; color: #64748b;">(380 Liters)</span>
+            <span style="font-size: 1.5rem; font-weight: 800; color: #0f172a;" id="gauge-motor-run-s">0s</span>
+            <span style="font-size: 11px; color: #64748b;">Current Run</span>
           </div>
-          <div style="margin-top: 8px; font-size: 11px; color: #64748b;" id="gauge-reservoir-floats">
-            Dry-Run Float: NORMAL (Water present)
+          <div style="font-size: 11px; color: #64748b; margin-top: 4px;" id="gauge-motor-auto-text">
+            Auto-Replenish: Disabled
           </div>
         </div>
 
-        <!-- Active Actuators Gauge -->
+        <!-- Card 3: Wireless Garden Node & Reservoir -->
         <div class="card">
           <div class="card-header">
-            <span style="font-size: 13px; font-weight: 600; color: #475569;">AC Contactor (25A)</span>
-            <span class="badge badge-gray" id="gauge-ac-status">OFF</span>
+            <span style="font-size: 12px; font-weight: 600; color: #475569;">Garden Node (ESP32-C3)</span>
+            <span class="badge badge-gray" id="gauge-garden-node-badge">DISCONNECTED</span>
           </div>
-          <div class="flex items-baseline gap-2">
-            <span style="font-size: 1.75rem; font-weight: 800; color: #0f172a;" id="gauge-ac-runtime">0s</span>
-            <span style="font-size: 12px; color: #64748b;">Continuous run</span>
+          <div style="font-size: 13px; font-weight: 700; color: #0f172a;" id="gauge-reservoir-text">
+            Reservoir Float: <span style="color:#94a3b8;">No reading yet</span>
           </div>
-          <div style="margin-top: 8px; font-size: 11px; color: #64748b;">
-            Safety Limit: 15 minutes max
+          <div style="font-size: 11px; color: #64748b; margin-top: 4px;" id="gauge-garden-telemetry-meta">
+            Gateway: /dev/garden-gateway &bull; ESP-NOW
           </div>
         </div>
 
-        <!-- Soil Moisture Summary -->
+        <!-- Card 4: Soil Moisture Summary -->
         <div class="card">
           <div class="card-header">
-            <span style="font-size: 13px; font-weight: 600; color: #475569;">Active Drip Zones</span>
-            <span class="badge badge-blue">4 Channels</span>
+            <span style="font-size: 12px; font-weight: 600; color: #475569;">4-Zone Drip &amp; Flow</span>
+            <span class="badge badge-gray" id="gauge-flow-badge">Flow: 0 pulses</span>
           </div>
-          <div class="grid grid-cols-2 gap-2" style="font-size: 12px;">
-            <div>Z1: <strong id="val-z1">45%</strong> <span style="color:#94a3b8;" id="volts-z1">(2.1V)</span></div>
-            <div>Z2: <strong id="val-z2">40%</strong> <span style="color:#94a3b8;" id="volts-z2">(2.2V)</span></div>
-            <div>Z3: <strong id="val-z3">50%</strong> <span style="color:#94a3b8;" id="volts-z3">(2.0V)</span></div>
-            <div>Z4: <strong id="val-z4">35%</strong> <span style="color:#94a3b8;" id="volts-z4">(2.3V)</span></div>
+          <div class="grid grid-cols-2 gap-1" style="font-size: 11px;">
+            <div>Z1: <span id="tele-z1-val" style="font-weight:600; color:#94a3b8;">No reading yet</span></div>
+            <div>Z2: <span id="tele-z2-val" style="font-weight:600; color:#94a3b8;">No reading yet</span></div>
+            <div>Z3: <span id="tele-z3-val" style="font-weight:600; color:#94a3b8;">No reading yet</span></div>
+            <div>Z4: <span id="tele-z4-val" style="font-weight:600; color:#94a3b8;">No reading yet</span></div>
           </div>
-          <div style="margin-top: 8px; font-size: 11px; color: #64748b;">
-            Capacitive ADS1115 &bull; 6h root rot cooldown
+          <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
+            Uncalibrated probes cannot auto-water
           </div>
         </div>
       </div>
 
-      <!-- Dynamic Interactive SVG Schematic Visualizer -->
+      <!-- Hybrid Circuit SVG Schematic Visualizer -->
       <div class="card" style="padding: 1rem; position: relative;">
         <div class="flex items-center justify-between" style="margin-bottom: 0.75rem;">
           <div>
-            <h2 style="font-size: 1rem; font-weight: 700; color: #0f172a;">Live Interactive Circuit Schematic</h2>
-            <p style="font-size: 12px; color: #64748b;">
-              Hover or click any node to inspect hardware pins, electrical state, and logic levels. Active currents animated with pulsing traces.
+            <h2 style="font-size: 0.95rem; font-weight: 700; color: #0f172a;">Hybrid Industrial Circuit Topology</h2>
+            <p style="font-size: 11px; color: #64748b;">
+              Hardwired Head-End (ROCK Pi S + PC817 Opto + Relay) &bull; ESP32-C3 USB Gateway &bull; Wireless ESP-NOW Garden Node
             </p>
           </div>
-          <div class="flex items-center gap-3" style="font-size: 12px;">
-            <div class="flex items-center gap-1"><span style="width: 10px; height: 10px; border-radius: 50%; background: #10b981; display: inline-block;"></span> Normal</div>
-            <div class="flex items-center gap-1"><span style="width: 10px; height: 10px; border-radius: 50%; background: #0284c7; display: inline-block;"></span> Energized</div>
-            <div class="flex items-center gap-1"><span style="width: 10px; height: 10px; border-radius: 50%; background: #ef4444; display: inline-block;"></span> Alarm/Lockout</div>
+          <div class="flex items-center gap-3" style="font-size: 11px;">
+            <div class="flex items-center gap-1"><span style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; display: inline-block;"></span> Healthy</div>
+            <div class="flex items-center gap-1"><span style="width: 8px; height: 8px; border-radius: 50%; background: #f97316; display: inline-block;"></span> Energized</div>
+            <div class="flex items-center gap-1"><span style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block;"></span> Tripped / Fault</div>
+            <div class="flex items-center gap-1"><span style="width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; display: inline-block;"></span> Unconfigured / Stale</div>
           </div>
         </div>
 
-        <!-- The SVG Canvas -->
-        <svg class="svg-circuit" viewBox="0 0 1000 500" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <!-- Water gradient -->
-            <linearGradient id="waterGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.85" />
-              <stop offset="100%" stop-color="#0284c7" stop-opacity="0.95" />
-            </linearGradient>
-            <!-- Chip gradient -->
-            <linearGradient id="chipGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#1e293b" />
-              <stop offset="100%" stop-color="#0f172a" />
-            </linearGradient>
-          </defs>
-
-          <!-- ========================================================= -->
-          <!-- 1. ROCK Pi S SBC (Central Controller Node)                -->
-          <!-- ========================================================= -->
+        <svg class="svg-circuit" viewBox="0 0 1000 480" xmlns="http://www.w3.org/2000/svg">
+          <!-- 1. HEAD-END: ROCK Pi S SBC -->
           <g id="node-rockpi" data-circuit-node="true"
-             data-node-title="Radxa ROCK Pi S (RK3308)"
-             data-node-pin="Header 1 / gpiochip1"
-             data-node-desc="Quad-core ARM Cortex-A35, 512MB RAM, Armbian Headless. Linux character device /dev/gpiochip1."
-             data-node-state="Active (Uvicorn FastAPI)">
-            <!-- Board body -->
-            <rect x="250" y="160" width="220" height="190" rx="10" fill="url(#chipGradient)" stroke="#334155" stroke-width="2" />
-            <text x="360" y="195" font-size="14" font-weight="700" fill="#f8fafc" text-anchor="middle">ROCK Pi S</text>
-            <text x="360" y="215" font-size="11" fill="#94a3b8" text-anchor="middle">Rockchip RK3308 (512MB)</text>
-
-            <!-- SoC core chip visual -->
-            <rect x="325" y="235" width="70" height="60" rx="4" fill="#0284c7" opacity="0.3" stroke="#38bdf8" stroke-width="1.5" />
-            <text x="360" y="270" font-size="11" font-weight="600" fill="#bae6fd" text-anchor="middle">RK3308</text>
-
-            <!-- Pin Header 1 (Left Side - Inputs) -->
-            <g id="header-inputs">
-              <!-- Line 10: Tank Low -->
-              <circle id="pin-10" cx="260" cy="245" r="5" fill="#10b981" />
-              <text x="272" y="249" font-size="10" fill="#cbd5e1">L10 (Low Flt)</text>
-
-              <!-- Line 11: Tank High -->
-              <circle id="pin-11" cx="260" cy="275" r="5" fill="#10b981" />
-              <text x="272" y="279" font-size="10" fill="#cbd5e1">L11 (High Flt)</text>
-
-              <!-- Line 12: Reservoir Low -->
-              <circle id="pin-12" cx="260" cy="305" r="5" fill="#10b981" />
-              <text x="272" y="309" font-size="10" fill="#cbd5e1">L12 (Res Flt)</text>
-            </g>
-
-            <!-- Pin Header 1 (Right Side - Outputs) -->
-            <g id="header-outputs">
-              <!-- Line 13: AC Contactor -->
-              <circle id="pin-13" cx="460" cy="205" r="5" fill="#64748b" />
-              <text x="448" y="209" font-size="10" fill="#cbd5e1" text-anchor="end">L13 (AC)</text>
-
-              <!-- Line 15: Zone 1 MOSFET -->
-              <circle id="pin-15" cx="460" cy="245" r="5" fill="#64748b" />
-              <text x="448" y="249" font-size="10" fill="#cbd5e1" text-anchor="end">L15 (Z1)</text>
-
-              <!-- Line 22: Zone 2 MOSFET -->
-              <circle id="pin-22" cx="460" cy="275" r="5" fill="#64748b" />
-              <text x="448" y="279" font-size="10" fill="#cbd5e1" text-anchor="end">L22 (Z2)</text>
-
-              <!-- Line 23: Zone 3 MOSFET -->
-              <circle id="pin-23" cx="460" cy="305" r="5" fill="#64748b" />
-              <text x="448" y="309" font-size="10" fill="#cbd5e1" text-anchor="end">L23 (Z3)</text>
-
-              <!-- Line 24: Zone 4 MOSFET -->
-              <circle id="pin-24" cx="460" cy="335" r="5" fill="#64748b" />
-              <text x="448" y="339" font-size="10" fill="#cbd5e1" text-anchor="end">L24 (Z4)</text>
-            </g>
-
-            <!-- I2C7 Header Pins (Bottom) -->
-            <circle id="pin-i2c-sda" cx="330" cy="340" r="4" fill="#38bdf8" />
-            <text x="330" y="332" font-size="9" fill="#94a3b8" text-anchor="middle">SDA</text>
-            <circle id="pin-i2c-scl" cx="390" cy="340" r="4" fill="#38bdf8" />
-            <text x="390" y="332" font-size="9" fill="#94a3b8" text-anchor="middle">SCL</text>
-          </g>
-
-          <!-- ========================================================= -->
-          <!-- 2. OVERHEAD WATER TANK (Top Left)                         -->
-          <!-- ========================================================= -->
-          <g id="node-overhead-tank" data-circuit-node="true"
-             data-node-title="Domestic Overhead Water Tank (1000L)"
-             data-node-pin="Lines 10 & 11 (Active LOW)"
-             data-node-desc="Dual float monitoring. High Float enforces automatic pump cut-off. Low Float flags auto-refill."
-             data-node-state="Normal (Water available)">
-            <!-- Tank Outline -->
-            <rect x="50" y="70" width="120" height="90" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="2" />
-            <!-- Water Fluid Rect -->
-            <rect id="water-overhead" class="tank-water" x="52" y="100" width="116" height="58" rx="6" />
-            <text x="110" y="90" font-size="11" font-weight="700" fill="#334155" text-anchor="middle">OVERHEAD TANK</text>
-
-            <!-- High Float Switch Indicator -->
-            <circle cx="65" cy="85" r="4" fill="#0284c7" />
-            <text x="75" y="89" font-size="9" fill="#475569">High Float (L11)</text>
-
-            <!-- Low Float Switch Indicator -->
-            <circle cx="65" cy="140" r="4" fill="#f59e0b" />
-            <text x="75" y="144" font-size="9" fill="#475569">Low Float (L10)</text>
-          </g>
-
-          <!-- Wires from Overhead Tank to ROCK Pi S Header 1 -->
-          <path id="wire-tank-high" d="M 65 85 L 20 85 L 20 275 L 255 275" fill="none" stroke="#64748b" stroke-width="1.5" />
-          <path id="wire-tank-low" d="M 65 140 L 35 140 L 35 245 L 255 245" fill="none" stroke="#64748b" stroke-width="1.5" />
-
-          <!-- ========================================================= -->
-          <!-- 3. GROUND RESERVOIR (Bottom Left)                         -->
-          <!-- ========================================================= -->
-          <g id="node-reservoir" data-circuit-node="true"
-             data-node-title="Ground Irrigation Reservoir (500L)"
-             data-node-pin="Line 12 (Active LOW)"
-             data-node-desc="Dry-run safety lockout float switch. Cuts all 4 DC pumps instantly when water is depleted."
-             data-node-state="Normal (Plentiful)">
-            <rect x="50" y="320" width="120" height="80" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="2" />
-            <rect id="water-reservoir" class="tank-water" x="52" y="340" width="116" height="58" rx="6" />
-            <text x="110" y="340" font-size="11" font-weight="700" fill="#334155" text-anchor="middle">RESERVOIR</text>
-
-            <!-- Low Float switch -->
-            <circle cx="65" cy="385" r="4" fill="#ef4444" />
-            <text x="75" y="389" font-size="9" fill="#475569">Dry-Run (L12)</text>
-          </g>
-
-          <!-- Wire from Reservoir to ROCK Pi S Line 12 -->
-          <path id="wire-reservoir-low" d="M 65 385 L 35 385 L 35 305 L 255 305" fill="none" stroke="#64748b" stroke-width="1.5" />
-
-          <!-- ========================================================= -->
-          <!-- 4. AC CONTACTOR & OVERHEAD PUMP (Top Right)              -->
-          <!-- ========================================================= -->
-          <g id="node-ac-contactor" data-circuit-node="true"
-             data-node-title="25A AC Contactor &amp; Submersible Pump"
-             data-node-pin="Line 13 (Active HIGH, 10k pull-down)"
-             data-node-desc="Drives 230V AC overhead pump. Protected by 15-minute max continuous runtime guard and high float cutoff."
-             data-node-state="De-energized">
-            <rect x="600" y="50" width="140" height="80" rx="6" fill="#f8fafc" stroke="#f97316" stroke-width="2" />
-            <text x="670" y="75" font-size="12" font-weight="700" fill="#c2410c" text-anchor="middle">25A AC CONTACTOR</text>
-            <text x="670" y="95" font-size="10" fill="#64748b" text-anchor="middle">Overhead Fill Pump</text>
-            <!-- Impeller Icon -->
-            <circle id="impeller-ac" cx="670" cy="115" r="8" fill="none" stroke="#ea580c" stroke-width="2" stroke-dasharray="4, 4" />
-          </g>
-
-          <!-- Wire from ROCK Pi S Line 13 to AC Contactor -->
-          <path id="wire-ac-contactor" class="wire-signal" d="M 465 205 L 560 205 L 560 90 L 600 90" fill="none" stroke="#f97316" stroke-width="2" />
-
-          <!-- Wire from Contactor to Overhead Tank (Water delivery pipe) -->
-          <path id="wire-ac-motor" class="wire-signal" d="M 600 70 L 170 70" fill="none" stroke="#0284c7" stroke-width="3" stroke-dasharray="8, 6" />
-
-          <!-- ========================================================= -->
-          <!-- 5. 4-CHANNEL MOSFET BOARD (Center Right)                  -->
-          <!-- ========================================================= -->
-          <g id="node-mosfet" data-circuit-node="true"
-             data-node-title="4-Channel Optocoupled MOSFET Module"
-             data-node-pin="Lines 15, 22, 23, 24"
-             data-node-desc="High-side switching for 4x 12V DC plant drip pumps. Optically isolated to prevent inductive spikes."
+             data-node-title="Radxa ROCK Pi S (RK3308, 512MB RAM)"
+             data-node-pin="Header 1 (Linux libgpiod)"
+             data-node-desc="Head-End Controller. Manages hardware interlock opto board, watchdog, USB audio, and USB garden gateway."
              data-node-state="Active">
-            <rect x="580" y="210" width="130" height="150" rx="6" fill="#f8fafc" stroke="#0284c7" stroke-width="2" />
-            <text x="645" y="235" font-size="11" font-weight="700" fill="#0369a1" text-anchor="middle">4-CH MOSFET</text>
-            <text x="645" y="250" font-size="9" fill="#64748b" text-anchor="middle">12V DC Driver</text>
+            <rect x="220" y="140" width="180" height="200" rx="8" fill="#1e293b" stroke="#334155" stroke-width="2" />
+            <text x="310" y="170" font-size="13" font-weight="700" fill="#f8fafc" text-anchor="middle">ROCK Pi S</text>
+            <text x="310" y="188" font-size="10" fill="#94a3b8" text-anchor="middle">Armbian Headless</text>
 
-            <circle cx="590" cy="270" r="3" fill="#0284c7" /><text x="600" y="273" font-size="9" fill="#475569">CH1</text>
-            <circle cx="590" cy="290" r="3" fill="#0284c7" /><text x="600" y="293" font-size="9" fill="#475569">CH2</text>
-            <circle cx="590" cy="310" r="3" fill="#0284c7" /><text x="600" y="313" font-size="9" fill="#475569">CH3</text>
-            <circle cx="590" cy="330" r="3" fill="#0284c7" /><text x="600" y="333" font-size="9" fill="#475569">CH4</text>
+            <!-- USB Hub Ports -->
+            <rect x="210" y="270" width="10" height="30" fill="#64748b" rx="2" />
+            <text x="180" y="290" font-size="9" fill="#64748b">USB Hub</text>
           </g>
 
-          <!-- Wires from ROCK Pi S to MOSFET Board -->
-          <path id="wire-zone-1" class="wire-signal" d="M 465 245 L 580 270" fill="none" stroke="#0284c7" />
-          <path id="wire-zone-2" class="wire-signal" d="M 465 275 L 580 290" fill="none" stroke="#0284c7" />
-          <path id="wire-zone-3" class="wire-signal" d="M 465 305 L 580 310" fill="none" stroke="#0284c7" />
-          <path id="wire-zone-4" class="wire-signal" d="M 465 335 L 580 330" fill="none" stroke="#0284c7" />
+          <!-- 2. PC817 4-Channel Optocoupler Board -->
+          <g id="node-pc817" data-circuit-node="true"
+             data-node-title="PC817 4-Channel Optocoupler Isolation Board"
+             data-node-pin="Configured in /etc/smart-water/config.yaml"
+             data-node-desc="Optically isolates float switches, leak sensor, and hardware interlock status from RK3308 GPIOs."
+             data-node-state="Active-LOW">
+            <rect x="50" y="140" width="120" height="180" rx="6" fill="#f8fafc" stroke="#64748b" stroke-width="1.5" />
+            <text x="110" y="165" font-size="11" font-weight="700" fill="#334155" text-anchor="middle">PC817 OPTO</text>
 
-          <!-- ========================================================= -->
-          <!-- 6. 4x 12V DC PLANT DRIP PUMPS (Far Right)                 -->
-          <!-- ========================================================= -->
-          <g id="node-zone1-pump" data-circuit-node="true" data-node-title="Zone 1 Drip Pump (12V DC)" data-node-pin="Line 15 MOSFET" data-node-desc="Precision drip for Bed 1." data-node-state="Idle">
-            <rect x="780" y="210" width="80" height="30" rx="4" fill="#f8fafc" stroke="#64748b" />
-            <text x="815" y="228" font-size="10" font-weight="600" fill="#334155" text-anchor="middle">PUMP 1</text>
-            <circle id="impeller-p1" cx="848" cy="225" r="5" fill="none" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="3, 3" />
+            <circle id="pin-in1" cx="65" cy="195" r="5" fill="#94a3b8" /><text x="80" y="199" font-size="9" fill="#475569">IN1: Tank Low</text>
+            <circle id="pin-in2" cx="65" cy="225" r="5" fill="#94a3b8" /><text x="80" y="229" font-size="9" fill="#475569">IN2: Interlock Out</text>
+            <circle id="pin-in3" cx="65" cy="255" r="5" fill="#94a3b8" /><text x="80" y="259" font-size="9" fill="#475569">IN3: Interlock Mid</text>
+            <circle id="pin-in4" cx="65" cy="285" r="5" fill="#94a3b8" /><text x="80" y="289" font-size="9" fill="#475569">IN4: Leak Sensor</text>
           </g>
-          <g id="node-zone2-pump" data-circuit-node="true" data-node-title="Zone 2 Drip Pump (12V DC)" data-node-pin="Line 22 MOSFET" data-node-desc="Precision drip for Bed 2." data-node-state="Idle">
-            <rect x="780" y="250" width="80" height="30" rx="4" fill="#f8fafc" stroke="#64748b" />
-            <text x="815" y="268" font-size="10" font-weight="600" fill="#334155" text-anchor="middle">PUMP 2</text>
-            <circle id="impeller-p2" cx="848" cy="265" r="5" fill="none" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="3, 3" />
+          <path d="M 170 230 L 220 230" stroke="#0ea5e9" stroke-width="2" />
+
+          <!-- 3. Hardware Interlock Chain (Full Float NC + Sump Float NO) -->
+          <g id="node-interlock-chain" data-circuit-node="true"
+             data-node-title="Hardware Interlock Chain (Priority 0 Safety)"
+             data-node-pin="Fused 5V &rarr; Full Float (NC) &rarr; Sump Float (NO)"
+             data-node-desc="Hardware circuit physically cuts relay VCC if tank is full or sump is dry. Software verifies health via IN2 and IN3."
+             data-node-state="Checking">
+            <rect x="50" y="20" width="180" height="90" rx="6" fill="#f8fafc" stroke="#0284c7" stroke-width="1.5" />
+            <text x="140" y="42" font-size="11" font-weight="700" fill="#0369a1" text-anchor="middle">INTERLOCK CHAIN</text>
+            <text x="140" y="60" font-size="9" fill="#64748b" text-anchor="middle">Full Float (NC) &rarr; Sump Float (NO)</text>
+            <circle cx="70" cy="85" r="4" fill="#0284c7" /><text x="80" y="89" font-size="9" fill="#334155">Full Float</text>
+            <circle cx="150" cy="85" r="4" fill="#0284c7" /><text x="160" y="89" font-size="9" fill="#334155">Sump Float</text>
           </g>
-          <g id="node-zone3-pump" data-circuit-node="true" data-node-title="Zone 3 Drip Pump (12V DC)" data-node-pin="Line 23 MOSFET" data-node-desc="Precision drip for Bed 3." data-node-state="Idle">
-            <rect x="780" y="290" width="80" height="30" rx="4" fill="#f8fafc" stroke="#64748b" />
-            <text x="815" y="308" font-size="10" font-weight="600" fill="#334155" text-anchor="middle">PUMP 3</text>
-            <circle id="impeller-p3" cx="848" cy="305" r="5" fill="none" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="3, 3" />
+          <path d="M 140 110 L 140 140" stroke="#0284c7" stroke-width="1.5" />
+
+          <!-- 4. Contactor Driver Relay & 25A AC Contactor -->
+          <g id="node-contactor" data-circuit-node="true"
+             data-node-title="25A AC Contactor &amp; Relay Module"
+             data-node-pin="Relay Output (Configurable Active Level)"
+             data-node-desc="Drives 230V overhead supply pump. Interlock chain provides hardware power cut; software enforces max runtime."
+             data-node-state="OFF">
+            <rect x="460" y="140" width="120" height="120" rx="6" fill="#f8fafc" stroke="#f97316" stroke-width="2" />
+            <text x="520" y="165" font-size="11" font-weight="700" fill="#c2410c" text-anchor="middle">25A CONTACTOR</text>
+            <text x="520" y="185" font-size="9" fill="#64748b" text-anchor="middle">Overhead Fill Pump</text>
+            <circle id="pin-relay-out" cx="475" cy="210" r="5" fill="#64748b" />
+            <text x="490" y="214" font-size="9" fill="#334155">Coil Driver</text>
+            <circle id="impeller-ac" cx="520" cy="235" r="8" fill="none" stroke="#ea580c" stroke-width="2" stroke-dasharray="4, 4" />
           </g>
-          <g id="node-zone4-pump" data-circuit-node="true" data-node-title="Zone 4 Drip Pump (12V DC)" data-node-pin="Line 24 MOSFET" data-node-desc="Precision drip for Bed 4." data-node-state="Idle">
-            <rect x="780" y="330" width="80" height="30" rx="4" fill="#f8fafc" stroke="#64748b" />
-            <text x="815" y="348" font-size="10" font-weight="600" fill="#334155" text-anchor="middle">PUMP 4</text>
-            <circle id="impeller-p4" cx="848" cy="345" r="5" fill="none" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="3, 3" />
+          <!-- Signal wire from Pi to Contactor -->
+          <path id="wire-contactor-coil" d="M 400 200 L 460 200" stroke="#f97316" stroke-width="2" fill="none" />
+
+          <!-- 5. USB CM108 Audio & Watchdog -->
+          <g id="node-audio" data-circuit-node="true" data-node-title="USB Audio / Speaker" data-node-pin="ALSA /dev/snd" data-node-desc="espeak-ng local alert announcer." data-node-state="Ready">
+            <rect x="250" y="40" width="120" height="50" rx="4" fill="#f8fafc" stroke="#8b5cf6" />
+            <text x="310" y="65" font-size="10" font-weight="700" fill="#6d28d9" text-anchor="middle">USB AUDIO (CM108)</text>
+            <text x="310" y="80" font-size="9" fill="#64748b" text-anchor="middle">espeak-ng Synthesizer</text>
+          </g>
+          <path d="M 310 90 L 310 140" stroke="#8b5cf6" stroke-width="1.5" />
+
+          <!-- 6. USB ESP32-C3 Gateway -->
+          <g id="node-gateway" data-circuit-node="true"
+             data-node-title="ESP32-C3 USB Gateway"
+             data-node-pin="/dev/garden-gateway (115200 baud)"
+             data-node-desc="Bridges ROCK Pi S serial JSON Lines stream to ESP-NOW wireless mesh packets."
+             data-node-state="Disconnected">
+            <rect x="230" y="380" width="160" height="70" rx="6" fill="#f8fafc" stroke="#0ea5e9" stroke-width="2" />
+            <text x="310" y="405" font-size="11" font-weight="700" fill="#0369a1" text-anchor="middle">ESP32-C3 GATEWAY</text>
+            <text x="310" y="422" font-size="9" fill="#64748b" text-anchor="middle">/dev/garden-gateway</text>
+            <text x="310" y="438" font-size="8" fill="#0ea5e9" text-anchor="middle">JSON Lines &harr; ESP-NOW</text>
+          </g>
+          <path d="M 310 340 L 310 380" stroke="#0ea5e9" stroke-width="2" />
+
+          <!-- 7. Wireless ESP-NOW Link -->
+          <path id="wire-wireless-link" d="M 390 415 L 640 415" stroke="#94a3b8" stroke-width="2" stroke-dasharray="6, 4" fill="none" />
+          <text x="515" y="405" font-size="9" fill="#64748b" text-anchor="middle">ESP-NOW Wireless (2.4GHz)</text>
+
+          <!-- 8. WIRELESS GARDEN NODE (ESP32-C3 Super Mini) -->
+          <g id="node-garden-node" data-circuit-node="true"
+             data-node-title="Garden Node (ESP32-C3 Super Mini)"
+             data-node-pin="Wireless Battery/Solar Node"
+             data-node-desc="Holds 1x ADS1115 ADC, 4x capacitive soil probes, 4x pump MOSFETs, 1 reservoir float, 1 flow meter."
+             data-node-state="Offline">
+            <rect x="640" y="140" width="150" height="300" rx="8" fill="#1e293b" stroke="#334155" stroke-width="2" />
+            <text x="715" y="170" font-size="12" font-weight="700" fill="#f8fafc" text-anchor="middle">GARDEN NODE</text>
+            <text x="715" y="188" font-size="9" fill="#94a3b8" text-anchor="middle">ESP32-C3 Super Mini</text>
+
+            <!-- ADS1115 Module inside node -->
+            <rect x="655" y="210" width="120" height="70" rx="4" fill="#0f172a" stroke="#0ea5e9" />
+            <text x="715" y="230" font-size="10" font-weight="700" fill="#38bdf8" text-anchor="middle">ADS1115 (0x48)</text>
+            <text x="715" y="246" font-size="8" fill="#94a3b8" text-anchor="middle">4x Soil Probes A0-A3</text>
+
+            <!-- Pump Driver Outputs -->
+            <text x="715" y="310" font-size="10" font-weight="600" fill="#e2e8f0" text-anchor="middle">4-CH MOSFETS</text>
+            <circle id="pin-res-float" cx="665" cy="335" r="4" fill="#94a3b8" />
+            <text x="675" y="339" font-size="8" fill="#94a3b8">Reservoir Float</text>
+            <circle id="pin-flow-meter" cx="665" cy="355" r="4" fill="#0284c7" />
+            <text x="675" y="359" font-size="8" fill="#94a3b8">Flow Meter (Z1)</text>
           </g>
 
-          <path d="M 710 270 L 780 225" fill="none" stroke="#0284c7" stroke-width="1.5" />
-          <path d="M 710 290 L 780 265" fill="none" stroke="#0284c7" stroke-width="1.5" />
-          <path d="M 710 310 L 780 305" fill="none" stroke="#0284c7" stroke-width="1.5" />
-          <path d="M 710 330 L 780 345" fill="none" stroke="#0284c7" stroke-width="1.5" />
-
-          <!-- ========================================================= -->
-          <!-- 7. ADS1115 16-BIT ADC MODULE (Bottom Center)             -->
-          <!-- ========================================================= -->
-          <g id="node-ads1115" data-circuit-node="true"
-             data-node-title="ADS1115 16-Bit I2C ADC"
-             data-node-pin="I2C7 (Pin 3 SDA, Pin 5 SCL, Addr 0x48)"
-             data-node-desc="Measures capacitive analog soil moisture probes across Channels A0, A1, A2, A3."
-             data-node-state="Sampling 128 SPS">
-            <rect x="290" y="400" width="140" height="70" rx="6" fill="#f8fafc" stroke="#0ea5e9" stroke-width="2" />
-            <text x="360" y="425" font-size="12" font-weight="700" fill="#0369a1" text-anchor="middle">ADS1115 ADC</text>
-            <text x="360" y="440" font-size="9" fill="#64748b" text-anchor="middle">16-Bit Precision (I2C7)</text>
-
-            <circle cx="310" cy="455" r="3" fill="#0284c7" /><text x="310" y="468" font-size="8" fill="#64748b" text-anchor="middle">A0</text>
-            <circle cx="340" cy="455" r="3" fill="#0284c7" /><text x="340" y="468" font-size="8" fill="#64748b" text-anchor="middle">A1</text>
-            <circle cx="370" cy="455" r="3" fill="#0284c7" /><text x="370" y="468" font-size="8" fill="#64748b" text-anchor="middle">A2</text>
-            <circle cx="400" cy="455" r="3" fill="#0284c7" /><text x="400" y="468" font-size="8" fill="#64748b" text-anchor="middle">A3</text>
+          <!-- 9. 4x Plant Drip Pumps (Far Right) -->
+          <g id="node-pump-1" data-circuit-node="true" data-node-title="Zone 1 Drip Pump (12V DC)" data-node-pin="Node GPIO0" data-node-desc="Precision drip for Bed 1 with in-line flow meter." data-node-state="OFF">
+            <rect x="850" y="150" width="110" height="40" rx="4" fill="#f8fafc" stroke="#64748b" />
+            <text x="895" y="172" font-size="10" font-weight="600" fill="#334155" text-anchor="middle">ZONE 1 PUMP</text>
+            <circle id="impeller-p1" cx="940" cy="170" r="5" fill="none" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="3, 3" />
           </g>
+          <path id="wire-zone-1" d="M 790 310 L 850 170" stroke="#0284c7" stroke-width="1.5" fill="none" />
 
-          <!-- I2C Bus Wires -->
-          <path id="wire-i2c" class="wire-signal" d="M 360 350 L 360 400" fill="none" stroke="#38bdf8" stroke-width="2" />
-
-          <!-- ========================================================= -->
-          <!-- 8. USB AUDIO VOICE INTERFACE (Top Center)                 -->
-          <!-- ========================================================= -->
-          <g id="node-audio" data-circuit-node="true"
-             data-node-title="USB Audio Synthesizer (ALSA / espeak-ng)"
-             data-node-pin="USB Audio DAC Dongle (hw:1,0)"
-             data-node-desc="Announces real-time spoken status alerts and emergency failsafes locally."
-             data-node-state="Online">
-            <rect x="320" y="50" width="80" height="50" rx="6" fill="#f8fafc" stroke="#8b5cf6" stroke-width="2" />
-            <text x="360" y="75" font-size="11" font-weight="700" fill="#6d28d9" text-anchor="middle">USB AUDIO</text>
-            <text x="360" y="90" font-size="9" fill="#64748b" text-anchor="middle">espeak-ng</text>
+          <g id="node-pump-2" data-circuit-node="true" data-node-title="Zone 2 Drip Pump (12V DC)" data-node-pin="Node GPIO1" data-node-desc="Precision drip for Bed 2." data-node-state="OFF">
+            <rect x="850" y="210" width="110" height="40" rx="4" fill="#f8fafc" stroke="#64748b" />
+            <text x="895" y="232" font-size="10" font-weight="600" fill="#334155" text-anchor="middle">ZONE 2 PUMP</text>
+            <circle id="impeller-p2" cx="940" cy="230" r="5" fill="none" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="3, 3" />
           </g>
-          <path d="M 360 100 L 360 160" fill="none" stroke="#8b5cf6" stroke-width="1.5" />
+          <path id="wire-zone-2" d="M 790 310 L 850 230" stroke="#0284c7" stroke-width="1.5" fill="none" />
+
+          <g id="node-pump-3" data-circuit-node="true" data-node-title="Zone 3 Drip Pump (12V DC)" data-node-pin="Node GPIO3" data-node-desc="Precision drip for Bed 3." data-node-state="OFF">
+            <rect x="850" y="270" width="110" height="40" rx="4" fill="#f8fafc" stroke="#64748b" />
+            <text x="895" y="292" font-size="10" font-weight="600" fill="#334155" text-anchor="middle">ZONE 3 PUMP</text>
+            <circle id="impeller-p3" cx="940" cy="290" r="5" fill="none" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="3, 3" />
+          </g>
+          <path id="wire-zone-3" d="M 790 310 L 850 290" stroke="#0284c7" stroke-width="1.5" fill="none" />
+
+          <g id="node-pump-4" data-circuit-node="true" data-node-title="Zone 4 Drip Pump (12V DC)" data-node-pin="Node GPIO10" data-node-desc="Precision drip for Bed 4." data-node-state="OFF">
+            <rect x="850" y="330" width="110" height="40" rx="4" fill="#f8fafc" stroke="#64748b" />
+            <text x="895" y="352" font-size="10" font-weight="600" fill="#334155" text-anchor="middle">ZONE 4 PUMP</text>
+            <circle id="impeller-p4" cx="940" cy="350" r="5" fill="none" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="3, 3" />
+          </g>
+          <path id="wire-zone-4" d="M 790 310 L 850 350" stroke="#0284c7" stroke-width="1.5" fill="none" />
+
+          <!-- 10. Irrigation Reservoir Component -->
+          <g id="node-reservoir" data-circuit-node="true" data-node-title="Irrigation Reservoir" data-node-pin="Float GPIO5 (Active LOW)" data-node-desc="Ground reservoir with float switch. Wet=Closed, Dry=Cuts pumps." data-node-state="No telemetry">
+            <rect x="850" y="390" width="110" height="40" rx="4" fill="#f8fafc" stroke="#0284c7" />
+            <text x="905" y="415" font-size="10" font-weight="700" fill="#0369a1" text-anchor="middle">RESERVOIR</text>
+          </g>
         </svg>
 
-        <!-- Floating Tooltip Container -->
         <div id="circuit-tooltip" class="circuit-tooltip"></div>
       </div>
     </section>
 
     <!-- ================================================================= -->
-    <!-- TAB 2: RULE STUDIO (LOW-CODE / NO-CODE BUILDER)                  -->
+    <!-- TAB 2: RULE STUDIO (LOW-CODE COMPOSER - ZERO SHIPPED RULES)       -->
     <!-- ================================================================= -->
     <section id="tab-rules" class="tab-pane" style="display: none;">
-      <!-- Pre-configured Templates Card -->
-      <div class="card" style="margin-bottom: 1.25rem;">
+      <!-- User Saved Templates Gallery -->
+      <div class="card" style="margin-bottom: 1rem;">
         <div class="card-header">
           <div>
-            <h2 style="font-size: 1rem; font-weight: 700;">Pre-Configured Automation Templates</h2>
-            <p style="font-size: 12px; color: #64748b;">Instant one-click presets for common irrigation and pump workflows.</p>
+            <h2 style="font-size: 0.95rem; font-weight: 700;">My Automation Templates</h2>
+            <p style="font-size: 11px; color: #64748b;">Reusable templates saved in your local database. Zero pre-seeded rules.</p>
           </div>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-4 gap-3" id="template-cards-container">
-          <!-- Populated by rules_builder.js -->
+          <!-- Rendered dynamically by rules_builder.js -->
         </div>
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <!-- Visual Rule Editor Form -->
-        <div class="card md:grid-cols-1" id="rule-editor-card" style="grid-column: span 2;">
+        <!-- Rule Editor Form -->
+        <div class="card" id="rule-editor-card" style="grid-column: span 2;">
           <div class="card-header">
             <div>
-              <h2 style="font-size: 1rem; font-weight: 700;">Visual Rule Composer</h2>
-              <p style="font-size: 12px; color: #64748b;">Construct multi-condition logic with discrete timed actions.</p>
+              <h2 style="font-size: 0.95rem; font-weight: 700;">Visual Rule Composer</h2>
+              <p style="font-size: 11px; color: #64748b;">Multi-condition logic with discrete timed actions. Failsafes take priority.</p>
             </div>
-            <button class="btn btn-secondary btn-sm" onclick="RulesBuilder.resetEditorForm()">Reset Form</button>
+            <button class="btn btn-secondary btn-sm" onclick="RulesBuilder.resetEditorForm()">Clear Form</button>
           </div>
 
           <form onsubmit="event.preventDefault(); RulesBuilder.saveCurrentRule();">
@@ -454,16 +382,13 @@
               <label style="font-size: 12px; font-weight: 600; color: #475569; display: block; margin-bottom: 4px;">
                 Rule Name
               </label>
-              <input type="text" id="rule-name-input" class="form-input" placeholder="e.g. Afternoon Fern Soak" required />
+              <input type="text" id="rule-name-input" class="form-input" placeholder="e.g. Afternoon Fern Drip" required />
             </div>
 
-            <div style="margin-bottom: 1.25rem;">
+            <div style="margin-bottom: 1rem;">
               <div class="flex items-center justify-between" style="margin-bottom: 6px;">
-                <label style="font-size: 12px; font-weight: 700; color: #0284c7;">
-                  IF CONDITIONS
-                </label>
+                <label style="font-size: 12px; font-weight: 700; color: #0284c7;">IF CONDITIONS</label>
                 <div class="flex items-center gap-2">
-                  <span style="font-size: 11px; color: #64748b;">Match:</span>
                   <select id="rule-combinator-select" class="form-select" style="width: auto; padding: 2px 8px; font-size: 11px;">
                     <option value="AND">ALL (AND)</option>
                     <option value="OR">ANY (OR)</option>
@@ -471,134 +396,156 @@
                   <button type="button" class="btn btn-secondary btn-sm" onclick="RulesBuilder.addConditionRow()">+ Add Trigger</button>
                 </div>
               </div>
-              <div id="conditions-container" style="background: #f8fafc; padding: 0.75rem; border-radius: 0.5rem; border: 1px dashed #cbd5e1;">
-                <!-- Condition Rows -->
-              </div>
+              <div id="conditions-container" style="background: #f8fafc; padding: 0.75rem; border-radius: 0.5rem; border: 1px dashed #cbd5e1;"></div>
             </div>
 
-            <div style="margin-bottom: 1.25rem;">
+            <div style="margin-bottom: 1rem;">
               <div class="flex items-center justify-between" style="margin-bottom: 6px;">
-                <label style="font-size: 12px; font-weight: 700; color: #059669;">
-                  THEN ACTIONS
-                </label>
+                <label style="font-size: 12px; font-weight: 700; color: #059669;">THEN ACTIONS</label>
                 <button type="button" class="btn btn-secondary btn-sm" onclick="RulesBuilder.addActionRow()">+ Add Action</button>
               </div>
-              <div id="actions-container" style="background: #f8fafc; padding: 0.75rem; border-radius: 0.5rem; border: 1px dashed #cbd5e1;">
-                <!-- Action Rows -->
-              </div>
+              <div id="actions-container" style="background: #f8fafc; padding: 0.75rem; border-radius: 0.5rem; border: 1px dashed #cbd5e1;"></div>
             </div>
 
             <div class="flex items-center justify-between" style="border-top: 1px solid #f1f5f9; padding-top: 1rem;">
-              <span style="font-size: 12px; color: #64748b;">
-                🛡️ Priority 0 Failsafes automatically validate before any action triggers.
+              <span style="font-size: 11px; color: #64748b;">
+                🛡️ Failsafes automatically validate before any action triggers. Rules cannot bypass lockouts.
               </span>
-              <button type="submit" class="btn btn-primary" style="font-weight: 600;">
-                Save &amp; Deploy Rule
-              </button>
+              <button type="submit" class="btn btn-primary" style="font-weight: 600;">Save &amp; Activate Rule</button>
             </div>
           </form>
         </div>
 
-        <!-- Active Rules List -->
+        <!-- Deployed Rules List -->
         <div class="card">
           <div class="card-header">
             <div>
-              <h2 style="font-size: 1rem; font-weight: 700;">Deployed Rules</h2>
-              <p style="font-size: 12px; color: #64748b;">Active automations evaluated every 5s.</p>
+              <h2 style="font-size: 0.95rem; font-weight: 700;">Active Rules</h2>
+              <p style="font-size: 11px; color: #64748b;">Evaluated every 5 seconds.</p>
             </div>
             <button class="btn btn-secondary btn-sm" onclick="RulesBuilder.fetchRules()">↻</button>
           </div>
-          <div id="active-rules-container" style="max-height: 480px; overflow-y: auto;">
-            <!-- Rendered by rules_builder.js -->
-          </div>
+          <div id="active-rules-container" style="max-height: 480px; overflow-y: auto;"></div>
         </div>
       </div>
     </section>
 
     <!-- ================================================================= -->
-    <!-- TAB 3: MANUAL CONTROLS & SAFETY OVERRIDES                         -->
+    <!-- TAB 3: MANUAL CONTROLS & SENSOR CALIBRATION                       -->
     <!-- ================================================================= -->
     <section id="tab-control" class="tab-pane" style="display: none;">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <!-- Overhead AC Pump Control Card -->
+        <!-- Motor Contactor Control -->
         <div class="card">
           <div class="card-header">
             <div>
-              <h2 style="font-size: 1rem; font-weight: 700; color: #c2410c;">Overhead AC Contactor Pump (25A)</h2>
-              <p style="font-size: 12px; color: #64748b;">Drives high-voltage supply pump with 15-minute continuous run safety guard.</p>
+              <h2 style="font-size: 0.95rem; font-weight: 700; color: #c2410c;">25A AC Contactor Pump Control</h2>
+              <p style="font-size: 11px; color: #64748b;">Operates 230V overhead supply pump. Obeys all hardware interlocks.</p>
             </div>
-            <span class="badge badge-gray" id="ctrl-ac-badge">OFF</span>
+            <span class="badge badge-gray" id="ctrl-motor-state-badge">OFF</span>
           </div>
 
           <div style="background: #fff7ed; border: 1px solid #fed7aa; border-radius: 0.5rem; padding: 0.75rem; margin-bottom: 1rem; font-size: 12px; color: #9a3412;">
-            <strong>Safety Interlocks:</strong> Automatically prohibited if Overhead Tank High Float is tripped or if 15-minute runtime guard was previously triggered.
+            <strong>Safety Guard:</strong> Auto-stop on Full float, Sump dry, or 15m runtime limit. Requires manual confirmation.
+          </div>
+
+          <div style="margin-bottom: 1rem;">
+            <label style="font-size: 12px; display: flex; align-items: center; gap: 6px;">
+              <input type="checkbox" id="chk-confirm-motor" />
+              <span>I confirm the water line is clear and it is safe to energize the motor.</span>
+            </label>
           </div>
 
           <div class="flex items-center gap-3">
-            <button class="btn btn-primary" id="btn-ac-start" onclick="togglePump('motor.ac', true, 60)">
-              Start Pump (60s Auto-Off)
-            </button>
-            <button class="btn btn-danger" onclick="togglePump('motor.ac', false)">
-              Stop Immediately
-            </button>
+            <button class="btn btn-primary" onclick="manualStartMotor()">Start Motor (Confirm)</button>
+            <button class="btn btn-danger" onclick="manualStopMotor()">Stop Motor</button>
+            <button class="btn btn-secondary" onclick="resetMotorLockout()">Reset Lockout</button>
           </div>
         </div>
 
-        <!-- 4-Zone Drip Irrigation Pump Switches -->
+        <!-- Plant Irrigation Zones Control & Live Calibrate -->
         <div class="card">
           <div class="card-header">
             <div>
-              <h2 style="font-size: 1rem; font-weight: 700; color: #0284c7;">Plant Drip Submersible Pumps (12V DC)</h2>
-              <p style="font-size: 12px; color: #64748b;">Individual zone overrides with 6-hour cooldown enforcement.</p>
+              <h2 style="font-size: 0.95rem; font-weight: 700; color: #0284c7;">Plant Irrigation Drip Zones</h2>
+              <p style="font-size: 11px; color: #64748b;">Wireless ESP32-C3 pumps with server-side 60s hard cap.</p>
             </div>
           </div>
 
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3" id="zones-control-grid">
             <!-- Zone 1 -->
             <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.5rem; padding: 0.75rem;">
-              <div class="flex items-center justify-between" style="margin-bottom: 0.5rem;">
-                <span style="font-weight: 600; font-size: 13px;">Zone 1 (Pump 1)</span>
+              <div class="flex justify-between items-center" style="margin-bottom: 4px;">
+                <span style="font-weight: 700; font-size: 12px;">Zone 1 (Drip Bed 1)</span>
                 <span class="badge badge-gray" id="ctrl-z1-badge">OFF</span>
               </div>
+              <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;" id="ctrl-z1-info">
+                Reading: No reading yet
+              </div>
               <div class="flex items-center gap-2">
-                <button class="btn btn-secondary btn-sm" onclick="togglePump('pump.zone_1', true, 15)">Water 15s</button>
-                <button class="btn btn-secondary btn-sm" onclick="togglePump('pump.zone_1', false)">Stop</button>
+                <button class="btn btn-secondary btn-sm" onclick="triggerZoneWater('zone_1', 15)">Water 15s</button>
+                <button class="btn btn-secondary btn-sm" onclick="stopZoneWater('zone_1')">Stop</button>
+              </div>
+              <div style="margin-top: 8px; border-top: 1px solid #e2e8f0; padding-top: 6px;" class="flex gap-1">
+                <button class="btn btn-secondary btn-sm" style="font-size: 10px;" onclick="calibrateProbe('zone_1', 'dry')">Air (Dry)</button>
+                <button class="btn btn-secondary btn-sm" style="font-size: 10px;" onclick="calibrateProbe('zone_1', 'wet')">Water (Wet)</button>
               </div>
             </div>
 
             <!-- Zone 2 -->
             <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.5rem; padding: 0.75rem;">
-              <div class="flex items-center justify-between" style="margin-bottom: 0.5rem;">
-                <span style="font-weight: 600; font-size: 13px;">Zone 2 (Pump 2)</span>
+              <div class="flex justify-between items-center" style="margin-bottom: 4px;">
+                <span style="font-weight: 700; font-size: 12px;">Zone 2 (Drip Bed 2)</span>
                 <span class="badge badge-gray" id="ctrl-z2-badge">OFF</span>
               </div>
+              <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;" id="ctrl-z2-info">
+                Reading: No reading yet
+              </div>
               <div class="flex items-center gap-2">
-                <button class="btn btn-secondary btn-sm" onclick="togglePump('pump.zone_2', true, 15)">Water 15s</button>
-                <button class="btn btn-secondary btn-sm" onclick="togglePump('pump.zone_2', false)">Stop</button>
+                <button class="btn btn-secondary btn-sm" onclick="triggerZoneWater('zone_2', 15)">Water 15s</button>
+                <button class="btn btn-secondary btn-sm" onclick="stopZoneWater('zone_2')">Stop</button>
+              </div>
+              <div style="margin-top: 8px; border-top: 1px solid #e2e8f0; padding-top: 6px;" class="flex gap-1">
+                <button class="btn btn-secondary btn-sm" style="font-size: 10px;" onclick="calibrateProbe('zone_2', 'dry')">Air (Dry)</button>
+                <button class="btn btn-secondary btn-sm" style="font-size: 10px;" onclick="calibrateProbe('zone_2', 'wet')">Water (Wet)</button>
               </div>
             </div>
 
             <!-- Zone 3 -->
             <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.5rem; padding: 0.75rem;">
-              <div class="flex items-center justify-between" style="margin-bottom: 0.5rem;">
-                <span style="font-weight: 600; font-size: 13px;">Zone 3 (Pump 3)</span>
+              <div class="flex justify-between items-center" style="margin-bottom: 4px;">
+                <span style="font-weight: 700; font-size: 12px;">Zone 3 (Drip Bed 3)</span>
                 <span class="badge badge-gray" id="ctrl-z3-badge">OFF</span>
               </div>
+              <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;" id="ctrl-z3-info">
+                Reading: No reading yet
+              </div>
               <div class="flex items-center gap-2">
-                <button class="btn btn-secondary btn-sm" onclick="togglePump('pump.zone_3', true, 15)">Water 15s</button>
-                <button class="btn btn-secondary btn-sm" onclick="togglePump('pump.zone_3', false)">Stop</button>
+                <button class="btn btn-secondary btn-sm" onclick="triggerZoneWater('zone_3', 15)">Water 15s</button>
+                <button class="btn btn-secondary btn-sm" onclick="stopZoneWater('zone_3')">Stop</button>
+              </div>
+              <div style="margin-top: 8px; border-top: 1px solid #e2e8f0; padding-top: 6px;" class="flex gap-1">
+                <button class="btn btn-secondary btn-sm" style="font-size: 10px;" onclick="calibrateProbe('zone_3', 'dry')">Air (Dry)</button>
+                <button class="btn btn-secondary btn-sm" style="font-size: 10px;" onclick="calibrateProbe('zone_3', 'wet')">Water (Wet)</button>
               </div>
             </div>
 
             <!-- Zone 4 -->
             <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.5rem; padding: 0.75rem;">
-              <div class="flex items-center justify-between" style="margin-bottom: 0.5rem;">
-                <span style="font-weight: 600; font-size: 13px;">Zone 4 (Pump 4)</span>
+              <div class="flex justify-between items-center" style="margin-bottom: 4px;">
+                <span style="font-weight: 700; font-size: 12px;">Zone 4 (Drip Bed 4)</span>
                 <span class="badge badge-gray" id="ctrl-z4-badge">OFF</span>
               </div>
+              <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;" id="ctrl-z4-info">
+                Reading: No reading yet
+              </div>
               <div class="flex items-center gap-2">
-                <button class="btn btn-secondary btn-sm" onclick="togglePump('pump.zone_4', true, 15)">Water 15s</button>
-                <button class="btn btn-secondary btn-sm" onclick="togglePump('pump.zone_4', false)">Stop</button>
+                <button class="btn btn-secondary btn-sm" onclick="triggerZoneWater('zone_4', 15)">Water 15s</button>
+                <button class="btn btn-secondary btn-sm" onclick="stopZoneWater('zone_4')">Stop</button>
+              </div>
+              <div style="margin-top: 8px; border-top: 1px solid #e2e8f0; padding-top: 6px;" class="flex gap-1">
+                <button class="btn btn-secondary btn-sm" style="font-size: 10px;" onclick="calibrateProbe('zone_4', 'dry')">Air (Dry)</button>
+                <button class="btn btn-secondary btn-sm" style="font-size: 10px;" onclick="calibrateProbe('zone_4', 'wet')">Water (Wet)</button>
               </div>
             </div>
           </div>
@@ -608,131 +555,202 @@
       <!-- Voice Test Bar -->
       <div class="card" style="margin-top: 1.25rem;">
         <div class="card-header">
-          <span style="font-weight: 700; font-size: 14px;">Test ALSA USB Audio Synthesizer (espeak-ng)</span>
+          <span style="font-weight: 700; font-size: 13px;">Test USB Voice Synthesizer (espeak-ng)</span>
         </div>
         <div class="flex items-center gap-2">
-          <input type="text" id="test-voice-input" class="form-input" placeholder="Type test phrase to announce over hardware speaker..." value="Testing Radxa audio alert system." />
-          <button class="btn btn-primary" onclick="testVoice()">Speak Alert</button>
+          <input type="text" id="test-voice-input" class="form-input" value="Radxa smart water audio check." placeholder="Enter test speech..." />
+          <button class="btn btn-primary" onclick="testVoiceAlert()">Speak</button>
         </div>
       </div>
     </section>
 
     <!-- ================================================================= -->
-    <!-- TAB 4: SIMULATION LAB (TESTING & VALIDATION)                      -->
+    <!-- TAB 4: COMMISSIONING WIZARD (7-STEP FIRST-RUN WALKTHROUGH)        -->
     <!-- ================================================================= -->
-    <section id="tab-simulation" class="tab-pane" style="display: none;">
-      <div class="card" style="margin-bottom: 1.25rem;">
+    <section id="tab-wizard" class="tab-pane" style="display: none;">
+      <div class="card">
         <div class="card-header">
           <div>
-            <h2 style="font-size: 1rem; font-weight: 700;">Virtual Hardware Fault Injector</h2>
+            <h2 style="font-size: 1rem; font-weight: 700;">Hardware Commissioning &amp; Calibration Wizard</h2>
             <p style="font-size: 12px; color: #64748b;">
-              Simulate edge cases directly inside the sandbox to verify Priority 0 safety interlocks without physical wiring.
+              Follow these sequential steps before putting the system into live production service.
             </p>
           </div>
-          <button class="btn btn-secondary btn-sm" onclick="resetMockPhysics()">Reset to Baseline</button>
+          <span class="badge badge-blue" id="wizard-progress-badge">Step 1 of 7</span>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <!-- Fluid Levels Sliders -->
-          <div style="background: #f8fafc; padding: 1rem; border-radius: 0.5rem; border: 1px solid #e2e8f0;">
-            <h3 style="font-size: 13px; font-weight: 700; margin-bottom: 0.75rem;">1. Tank Fluid Controls</h3>
-            <div style="margin-bottom: 1rem;">
-              <label style="font-size: 11px; display: block; margin-bottom: 2px;">Overhead Tank (Liters: 0 to 1000):</label>
-              <input type="range" min="0" max="1000" value="500" id="sim-tank-range" oninput="setMockTank(this.value)" style="width: 100%;" />
-              <div class="flex justify-between" style="font-size: 11px; color: #64748b;">
-                <span>0L (Empty)</span>
-                <span id="sim-tank-val">500L</span>
-                <span>1000L (Full)</span>
-              </div>
-            </div>
+        <!-- Step 1: Network & Token Notice -->
+        <div class="wizard-step active" id="wstep-1">
+          <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">Step 1: Network Bind &amp; API Bearer Token</h3>
+          <p style="font-size: 12px; color: #475569; margin-bottom: 12px;">
+            The controller binds strictly to <code>127.0.0.1</code> or your private Tailscale IP. Enter your Bearer token below so this browser session can authorize API calls.
+          </p>
+          <div style="max-width: 480px; margin-bottom: 1rem;">
+            <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 4px;">API Bearer Token:</label>
+            <input type="password" id="input-auth-token" class="form-input" placeholder="Paste token printed during installation..." />
+            <button class="btn btn-secondary btn-sm" style="margin-top: 6px;" onclick="saveTokenToBrowser()">Save Token in Browser</button>
+          </div>
+          <button class="btn btn-primary" onclick="nextWizardStep(2)">Proceed to Step 2 &rarr;</button>
+        </div>
 
-            <div>
-              <label style="font-size: 11px; display: block; margin-bottom: 2px;">Reservoir (Liters: 0 to 500):</label>
-              <input type="range" min="0" max="500" value="400" id="sim-res-range" oninput="setMockReservoir(this.value)" style="width: 100%;" />
-              <div class="flex justify-between" style="font-size: 11px; color: #64748b;">
-                <span>0L (Dry Run)</span>
-                <span id="sim-res-val">400L</span>
-                <span>500L</span>
-              </div>
+        <!-- Step 2: Map Pins & gpioinfo -->
+        <div class="wizard-step" id="wstep-2">
+          <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">Step 2: Map Head-End Pins (Inspect Board GPIOs)</h3>
+          <p style="font-size: 12px; color: #475569; margin-bottom: 8px;">
+            Review the real line offsets from the Linux kernel below. Confirm your pins before wiring.
+          </p>
+          <div style="background: #0f172a; color: #f8fafc; font-family: monospace; font-size: 11px; padding: 0.75rem; border-radius: 0.5rem; max-height: 220px; overflow-y: auto; margin-bottom: 1rem;" id="wizard-gpioinfo-box">
+            Loading gpioinfo output...
+          </div>
+          <button class="btn btn-secondary" onclick="nextWizardStep(1)">&larr; Back</button>
+          <button class="btn btn-primary" onclick="nextWizardStep(3)">Proceed to Step 3 &rarr;</button>
+        </div>
+
+        <!-- Step 3: Test Inputs by Physical Toggle -->
+        <div class="wizard-step" id="wstep-3">
+          <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">Step 3: Test Float Switches (Live Physical Toggle)</h3>
+          <p style="font-size: 12px; color: #475569; margin-bottom: 12px;">
+            Physically raise and lower each float switch. Verify the indicators below change state immediately.
+          </p>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-3" style="margin-bottom: 1rem;">
+            <div style="background:#f8fafc; padding:0.75rem; border-radius:0.5rem; border:1px solid #e2e8f0;">
+              <div style="font-size:11px; font-weight:700;">IN1: Tank Low</div>
+              <div id="wtest-in1" style="font-size:12px; margin-top:4px;">Waiting...</div>
+            </div>
+            <div style="background:#f8fafc; padding:0.75rem; border-radius:0.5rem; border:1px solid #e2e8f0;">
+              <div style="font-size:11px; font-weight:700;">IN2: Interlock Out</div>
+              <div id="wtest-in2" style="font-size:12px; margin-top:4px;">Waiting...</div>
+            </div>
+            <div style="background:#f8fafc; padding:0.75rem; border-radius:0.5rem; border:1px solid #e2e8f0;">
+              <div style="font-size:11px; font-weight:700;">IN3: Interlock Mid</div>
+              <div id="wtest-in3" style="font-size:12px; margin-top:4px;">Waiting...</div>
+            </div>
+            <div style="background:#f8fafc; padding:0.75rem; border-radius:0.5rem; border:1px solid #e2e8f0;">
+              <div style="font-size:11px; font-weight:700;">IN4: Leak Sensor</div>
+              <div id="wtest-in4" style="font-size:12px; margin-top:4px;">Waiting...</div>
             </div>
           </div>
+          <button class="btn btn-secondary" onclick="pollWizardInputs()">Refresh Live Inputs</button>
+          <button class="btn btn-primary" onclick="nextWizardStep(4)">Proceed to Step 4 &rarr;</button>
+        </div>
 
-          <!-- Quick Fault Trigger Buttons -->
-          <div style="background: #f8fafc; padding: 1rem; border-radius: 0.5rem; border: 1px solid #e2e8f0;">
-            <h3 style="font-size: 13px; font-weight: 700; margin-bottom: 0.75rem;">2. Instant Failsafe Triggers</h3>
-            <div class="flex flex-col gap-2">
-              <button class="btn btn-danger btn-sm" onclick="setMockReservoir(10)">
-                🚨 Trigger Dry-Run Lockout (Empty Reservoir)
-              </button>
-              <button class="btn btn-primary btn-sm" onclick="setMockTank(980)">
-                🌊 Trigger Overhead Tank Full (Trip High Float)
-              </button>
-              <button class="btn btn-secondary btn-sm" onclick="setMockReservoir(450); setMockTank(500);">
-                ✅ Refill All Tanks to Normal
-              </button>
-            </div>
+        <!-- Step 4: Relay Test (Bench confirmation) -->
+        <div class="wizard-step" id="wstep-4">
+          <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">Step 4: Relay Dry Test</h3>
+          <div style="background:#fef2f2; border:1px solid #fecaca; padding:0.75rem; border-radius:0.5rem; color:#991b1b; font-size:12px; margin-bottom:1rem;">
+            <strong>MANDATORY SAFETY REQUIREMENT:</strong> The 230V mains power to the motor MUST BE PHYSICALLY DISCONNECTED or MCB OFF before clicking the relay!
           </div>
+          <label style="font-size:12px; display:flex; align-items:center; gap:6px; margin-bottom:1rem;">
+            <input type="checkbox" id="wchk-motor-disconnected" />
+            <span>I certify that high-voltage motor mains is physically disconnected.</span>
+          </label>
+          <div class="flex items-center gap-3">
+            <button class="btn btn-secondary" onclick="testRelayCycle()">Click Relay (1.5s Cycle)</button>
+            <button class="btn btn-primary" onclick="nextWizardStep(5)">Proceed to Step 5 &rarr;</button>
+          </div>
+        </div>
 
-          <!-- Sensor Out-of-Bounds Injector -->
-          <div style="background: #f8fafc; padding: 1rem; border-radius: 0.5rem; border: 1px solid #e2e8f0;">
-            <h3 style="font-size: 13px; font-weight: 700; margin-bottom: 0.75rem;">3. Out-of-Bounds Sensor Guard</h3>
-            <p style="font-size: 11px; color: #64748b; margin-bottom: 0.5rem;">
-              Inject probe short (<0.5V) or open-circuit (>3.0V) to test sensor guard.
-            </p>
-            <div class="flex items-center gap-2" style="margin-bottom: 0.5rem;">
-              <select id="sim-probe-channel" class="form-select" style="font-size: 12px;">
-                <option value="0">Zone 1 Probe (A0)</option>
-                <option value="1">Zone 2 Probe (A1)</option>
-                <option value="2">Zone 3 Probe (A2)</option>
-                <option value="3">Zone 4 Probe (A3)</option>
-              </select>
-            </div>
-            <div class="flex items-center gap-2">
-              <button class="btn btn-danger btn-sm" onclick="injectProbeFault(0.2)">Inject Short (0.2V)</button>
-              <button class="btn btn-danger btn-sm" onclick="injectProbeFault(3.3)">Inject Air (3.3V)</button>
-            </div>
+        <!-- Step 5: Gateway Pairing -->
+        <div class="wizard-step" id="wstep-5">
+          <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">Step 5: Pair Wireless Garden Gateway</h3>
+          <p style="font-size: 12px; color: #475569; margin-bottom: 12px;">
+            Plug in the ESP32-C3 Gateway to the Pi's USB hub. The gateway receives ESP-NOW packets from the garden node.
+          </p>
+          <div style="background:#f8fafc; padding:0.75rem; border-radius:0.5rem; border:1px solid #e2e8f0; font-size:12px; margin-bottom:1rem;" id="wizard-gateway-status">
+            Gateway Status: Checking connection...
           </div>
+          <button class="btn btn-primary" onclick="nextWizardStep(6)">Proceed to Step 6 &rarr;</button>
+        </div>
+
+        <!-- Step 6: Calibrate Soil Probes -->
+        <div class="wizard-step" id="wstep-6">
+          <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">Step 6: Probe Calibration (Air vs Water)</h3>
+          <p style="font-size: 12px; color: #475569; margin-bottom: 12px;">
+            For each zone: hold the capacitive probe in air and click "Capture Dry". Then submerge in a cup of water up to the white line and click "Capture Wet".
+          </p>
+          <div style="font-size: 12px; color: #64748b; margin-bottom: 1rem;">
+            Use the calibration buttons in the <strong>Manual Controls &amp; Calibration</strong> tab to capture voltages.
+          </div>
+          <button class="btn btn-primary" onclick="nextWizardStep(7)">Proceed to Step 7 &rarr;</button>
+        </div>
+
+        <!-- Step 7: Optional Telegram & Finalize -->
+        <div class="wizard-step" id="wstep-7">
+          <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">Step 7: Finalize Commissioning</h3>
+          <p style="font-size: 12px; color: #475569; margin-bottom: 12px;">
+            Confirm all physical tests have passed. Completing the wizard unlocks production automated operation.
+          </p>
+          <label style="font-size:12px; display:flex; align-items:center; gap:6px; margin-bottom:1rem;">
+            <input type="checkbox" id="wchk-complete-confirm" />
+            <span>I confirm that wiring, float tests, and relay checks passed successfully.</span>
+          </label>
+          <button class="btn btn-primary" onclick="finalizeSetupWizard()">Complete Commissioning &amp; Lock Wizard</button>
         </div>
       </div>
     </section>
 
     <!-- ================================================================= -->
-    <!-- TAB 5: VOICE & AUDIT LOGS                                         -->
+    <!-- TAB 5: SYSTEM CONFIGURATION (/etc/smart-water/config.yaml)        -->
     <!-- ================================================================= -->
-    <section id="tab-logs" class="tab-pane" style="display: none;">
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <!-- Voice Announcement History -->
-        <div class="card">
-          <div class="card-header">
-            <h2 style="font-size: 1rem; font-weight: 700;">Synthesized Voice Audit Trail</h2>
-            <span class="badge badge-purple" style="background:#f5f3ff; color:#7c3aed; border:1px solid #ddd6fe;">espeak-ng</span>
+    <section id="tab-settings" class="tab-pane" style="display: none;">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2 style="font-size: 0.95rem; font-weight: 700;">System Configuration Reference (/etc/smart-water/config.yaml)</h2>
+            <p style="font-size: 11px; color: #64748b;">Live configuration settings validated via Pydantic v2.</p>
           </div>
-          <div id="voice-logs-container" style="max-height: 400px; overflow-y: auto; font-size: 12px; font-family: monospace;">
-            <div style="padding: 1rem; color: #94a3b8; text-align: center;">Awaiting announcements...</div>
+          <button class="btn btn-primary btn-sm" onclick="saveSettingsForm()">Save Configuration</button>
+        </div>
+        <div id="settings-form-container">
+          <pre style="background: #f8fafc; padding: 1rem; border-radius: 0.5rem; font-size: 11px; overflow-x: auto;" id="settings-yaml-preview">Loading configuration...</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- TAB 6: SYSTEM JOURNAL & SQLITE DATABASE BACKUP                    -->
+    <!-- ================================================================= -->
+    <section id="tab-journal" class="tab-pane" style="display: none;">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <!-- Event Journal Table -->
+        <div class="card" style="grid-column: span 2;">
+          <div class="card-header">
+            <h2 style="font-size: 0.95rem; font-weight: 700;">Event Journal (Failsafes, Overrides, Wiring)</h2>
+            <button class="btn btn-secondary btn-sm" onclick="fetchEventJournal()">Refresh</button>
+          </div>
+          <div id="events-journal-container" style="max-height: 400px; overflow-y: auto; font-size: 11px;">
+            <div style="padding: 1rem; color: #94a3b8; text-align: center;">Loading events...</div>
           </div>
         </div>
 
-        <!-- System Events & Failsafes -->
+        <!-- Database Maintenance & VACUUM Backup -->
         <div class="card">
           <div class="card-header">
-            <h2 style="font-size: 1rem; font-weight: 700;">System Event Journal</h2>
-            <button class="btn btn-secondary btn-sm" onclick="fetchEventJournal()">Refresh</button>
+            <h2 style="font-size: 0.95rem; font-weight: 700;">Database Backup</h2>
           </div>
-          <div id="events-journal-container" style="max-height: 400px; overflow-y: auto; font-size: 12px;">
-            <div style="padding: 1rem; color: #94a3b8; text-align: center;">Loading events...</div>
-          </div>
+          <p style="font-size: 12px; color: #475569; margin-bottom: 12px;">
+            Downloads an atomic online <code>VACUUM INTO</code> snapshot of <code>system.db</code> without locking active writes.
+          </p>
+          <a href="/api/backup" class="btn btn-primary" download style="text-decoration: none; display: inline-flex;">
+            ⬇️ Download SQLite Backup (.db)
+          </a>
         </div>
       </div>
     </section>
   </main>
 
-  <!-- External Visualizer Scripts -->
   <script src="/static/js/circuit.js"></script>
   <script src="/static/js/rules_builder.js"></script>
 
-  <!-- Dashboard Controller Script -->
+  <!-- Unified Controller Script -->
   <script>
-    // Tab Switching
+    function getAuthHeaders() {
+      const headers = { "Content-Type": "application/json" };
+      const token = localStorage.getItem("smart_water_token");
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      return headers;
+    }
+
     function switchTab(tabId, btn) {
       document.querySelectorAll(".tab-pane").forEach(el => el.style.display = "none");
       document.querySelectorAll(".nav-tab-btn").forEach(el => el.classList.remove("active"));
@@ -741,46 +759,57 @@
       if (btn) btn.classList.add("active");
     }
 
-    // Server-Sent Events (SSE) Live Telemetry Stream
-    let evtSource = null;
-    let voiceLogs = [];
+    function saveTokenToBrowser() {
+      const val = document.getElementById("input-auth-token").value.trim();
+      if (!val) { alert("Please enter your token."); return; }
+      localStorage.setItem("smart_water_token", val);
+      alert("Token saved in browser localStorage.");
+    }
 
+    // Connect SSE Live Telemetry
+    let evtSource = null;
     function connectSSE() {
       evtSource = new EventSource("/api/telemetry/stream");
-
       evtSource.addEventListener("telemetry", (e) => {
         try {
           const state = JSON.parse(e.data);
-          updateDashboardUI(state);
-          if (window.CircuitSchematic) {
-            window.CircuitSchematic.updateTelemetry(state);
-          }
+          updateDashboard(state);
+          if (window.CircuitSchematic) window.CircuitSchematic.updateTelemetry(state);
         } catch (err) {
           console.error("SSE parse error:", err);
         }
       });
-
-      evtSource.onerror = (err) => {
-        console.warn("SSE stream disconnected. Reconnecting in 3s...", err);
+      evtSource.onerror = () => {
         evtSource.close();
         setTimeout(connectSSE, 3000);
       };
     }
 
-    function updateDashboardUI(state) {
+    function updateDashboard(state) {
       if (!state) return;
-
-      const system = state.system || {};
-      const sensors = state.sensors || {};
-      const actuators = state.actuators || {};
+      const he = state.head_end || {};
+      const motor = state.motor || {};
+      const garden = state.garden || {};
       const alarms = state.alarms || {};
-      const tracking = state.runtime_tracking || {};
-      const probes = sensors.soil_probes || {};
-      const moisture = sensors.soil_percentages || {};
 
-      // Badges
-      document.getElementById("badge-mode").textContent = system.mode === "MOCK" ? "Hardware Mock Active" : "Physical RK3308 Hardware";
-      document.getElementById("badge-uptime").textContent = `Uptime: ${system.uptime_seconds || 0}s`;
+      // System Status Badge
+      const statusBadge = document.getElementById("badge-system-status");
+      statusBadge.textContent = state.system_status || "SAFE-NO-HARDWARE";
+      if (state.system_status === "ALARM") statusBadge.className = "badge badge-red";
+      else if (state.system_status === "OK") statusBadge.className = "badge badge-green";
+      else statusBadge.className = "badge badge-gray";
+
+      // Interlock Badge
+      const ilBadge = document.getElementById("badge-interlock-status");
+      ilBadge.textContent = `Interlock: ${(he.interlock_cause || "unconfigured").toUpperCase()}`;
+      document.getElementById("gauge-interlock-cause").textContent = (he.interlock_cause || "UNCONFIGURED").toUpperCase();
+
+      // Garden link badge
+      const glBadge = document.getElementById("badge-garden-link");
+      glBadge.textContent = garden.node_online && !garden.is_stale ? "Garden Node: Online" : "Garden Node: Disconnected";
+      glBadge.className = garden.node_online && !garden.is_stale ? "badge badge-green" : "badge badge-gray";
+
+      document.getElementById("badge-uptime").textContent = `Uptime: ${state.uptime_seconds || 0}s`;
 
       // Alarms Banner
       const alarmKeys = Object.keys(alarms);
@@ -792,206 +821,263 @@
         banner.style.display = "none";
       }
 
-      // Tank Gauge
-      const tankLow = !!sensors.tank_low_float;
-      const tankHigh = !!sensors.tank_high_float;
-      const tankValEl = document.getElementById("gauge-tank-val");
-      const tankStatEl = document.getElementById("gauge-tank-status");
-
-      if (tankHigh) {
-        tankValEl.textContent = "100%";
-        tankStatEl.textContent = "FULL";
-        tankStatEl.className = "badge badge-blue";
-      } else if (tankLow) {
-        tankValEl.textContent = "<25%";
-        tankStatEl.textContent = "LOW";
-        tankStatEl.className = "badge badge-amber";
+      // Tank low text
+      const tankLowEl = document.getElementById("gauge-tank-low-text");
+      if (he.tank_low_float === null || he.is_stale) {
+        tankLowEl.innerHTML = `Low Float: <span style="color:#94a3b8;">No reading yet</span>`;
       } else {
-        tankValEl.textContent = "~60%";
-        tankStatEl.textContent = "NORMAL";
-        tankStatEl.className = "badge badge-green";
+        tankLowEl.innerHTML = `Low Float: <strong style="color:${he.tank_low_float ? '#f59e0b' : '#10b981'}">${he.tank_low_float ? 'LOW (Needs water)' : 'NORMAL'}</strong>`;
       }
-      document.getElementById("gauge-tank-floats").textContent = `High Float: ${tankHigh ? "TRIPPED" : "OPEN"} • Low Float: ${tankLow ? "TRIPPED" : "SUBMERGED"}`;
 
-      // Reservoir Gauge
-      const resEmpty = !!sensors.reservoir_low_float;
-      const resValEl = document.getElementById("gauge-reservoir-val");
-      const resStatEl = document.getElementById("gauge-reservoir-status");
-      if (resEmpty) {
-        resValEl.textContent = "EMPTY";
-        resStatEl.textContent = "DRY-RUN LOCK";
-        resStatEl.className = "badge badge-red";
+      // Motor status
+      const motorBadge = document.getElementById("gauge-motor-badge");
+      const ctrlMotorBadge = document.getElementById("ctrl-motor-state-badge");
+      motorBadge.textContent = motor.state || "OFF";
+      ctrlMotorBadge.textContent = motor.state || "OFF";
+      if (motor.state === "RUNNING") {
+        motorBadge.className = "badge badge-amber";
+        ctrlMotorBadge.className = "badge badge-amber";
       } else {
-        resValEl.textContent = "AMPLE";
-        resStatEl.textContent = "OK";
-        resStatEl.className = "badge badge-green";
+        motorBadge.className = "badge badge-gray";
+        ctrlMotorBadge.className = "badge badge-gray";
       }
+      document.getElementById("gauge-motor-run-s").textContent = `${motor.current_run_seconds || 0}s`;
+      document.getElementById("gauge-motor-auto-text").textContent = `Auto-Replenish: ${motor.auto_mode ? 'ENABLED' : 'DISABLED'}`;
 
-      // AC Contactor
-      const acOn = !!actuators.ac_contactor;
-      const acBadge = document.getElementById("gauge-ac-status");
-      const ctrlAcBadge = document.getElementById("ctrl-ac-badge");
-      acBadge.textContent = acOn ? "RUNNING" : "OFF";
-      acBadge.className = acOn ? "badge badge-amber" : "badge badge-gray";
-      if (ctrlAcBadge) {
-        ctrlAcBadge.textContent = acOn ? "RUNNING" : "OFF";
-        ctrlAcBadge.className = acOn ? "badge badge-amber" : "badge badge-gray";
-      }
-
-      if (acOn && tracking.ac_contactor_started_at) {
-        const runSec = Math.floor((Date.now() / 1000) - tracking.ac_contactor_started_at);
-        document.getElementById("gauge-ac-runtime").textContent = `${Math.max(0, runSec)}s`;
+      // Reservoir float
+      const resEl = document.getElementById("gauge-reservoir-text");
+      if (garden.reservoir_wet === null || garden.is_stale) {
+        resEl.innerHTML = `Reservoir: <span style="color:#94a3b8;">No reading yet</span>`;
       } else {
-        document.getElementById("gauge-ac-runtime").textContent = "0s";
+        resEl.innerHTML = `Reservoir: <strong style="color:${garden.reservoir_wet ? '#10b981' : '#ef4444'}">${garden.reservoir_wet ? 'AMPLE' : 'DRY-RUN LOCKED'}</strong>`;
       }
 
-      // DC Pump Zone Badges
-      setZoneStatus("z1", actuators.zone_1_pump, moisture.zone_1, probes.zone_1_voltage);
-      setZoneStatus("z2", actuators.zone_2_pump, moisture.zone_2, probes.zone_2_voltage);
-      setZoneStatus("z3", actuators.zone_3_pump, moisture.zone_3, probes.zone_3_voltage);
-      setZoneStatus("z4", actuators.zone_4_pump, moisture.zone_4, probes.zone_4_voltage);
+      // Zones Telemetry
+      const z = garden.zones || {};
+      for (let i = 1; i <= 4; i++) {
+        const zk = `zone_${i}`;
+        const zd = z[zk] || {};
+        const teleEl = document.getElementById(`tele-z${i}-val`);
+        const ctrlInfo = document.getElementById(`ctrl-z${i}-info`);
+        const ctrlBadge = document.getElementById(`ctrl-z${i}-badge`);
 
-      // Voice announcements track
-      if (system.last_speech && !voiceLogs.includes(system.last_speech)) {
-        voiceLogs.unshift(system.last_speech);
-        renderVoiceLogs();
-      }
-    }
-
-    function setZoneStatus(zoneKey, isOn, pct, volts) {
-      const valEl = document.getElementById(`val-${zoneKey}`);
-      const vEl = document.getElementById(`volts-${zoneKey}`);
-      const badge = document.getElementById(`ctrl-${zoneKey}-badge`);
-
-      if (valEl) valEl.textContent = `${pct || 0}%`;
-      if (vEl) vEl.textContent = `(${volts || 0}V)`;
-      if (badge) {
-        badge.textContent = isOn ? "ON" : "OFF";
-        badge.className = isOn ? "badge badge-blue" : "badge badge-gray";
-      }
-    }
-
-    function renderVoiceLogs() {
-      const container = document.getElementById("voice-logs-container");
-      if (!container) return;
-      container.innerHTML = voiceLogs.map(l => `
-        <div style="padding: 0.5rem 0.75rem; border-bottom: 1px solid #f1f5f9;">
-          <span style="color: #64748b;">[${new Date().toLocaleTimeString()}]</span>
-          <strong style="color: #7c3aed; margin-left: 6px;">Voice Alert:</strong> "${l}"
-        </div>
-      `).join("");
-    }
-
-    // Manual Pump Command
-    async function togglePump(target, state, duration = 15) {
-      try {
-        const res = await fetch("/api/control/pump", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target, state, duration_seconds: duration })
-        });
-        if (!res.ok) {
-          const err = await res.json();
-          alert(err.detail || "Command failed");
+        if (zd.voltage === null || garden.is_stale) {
+          if (teleEl) teleEl.innerHTML = `<span style="color:#94a3b8;">No reading yet</span>`;
+          if (ctrlInfo) ctrlInfo.textContent = "Reading: No reading yet";
+        } else {
+          const moistStr = zd.moisture_pct !== null ? `${zd.moisture_pct}%` : "Uncalibrated";
+          if (teleEl) teleEl.innerHTML = `<strong>${moistStr}</strong> (${zd.voltage}V)`;
+          if (ctrlInfo) ctrlInfo.textContent = `Moisture: ${moistStr} (${zd.voltage}V)`;
         }
+
+        if (ctrlBadge) {
+          ctrlBadge.textContent = zd.pump_running ? "RUNNING" : "OFF";
+          ctrlBadge.className = zd.pump_running ? "badge badge-blue" : "badge badge-gray";
+        }
+      }
+
+      // Wizard banner visibility check
+      fetch("/healthz").then(r => r.json()).then(h => {
+        const wizBanner = document.getElementById("wizard-alert-banner");
+        if (wizBanner) wizBanner.style.display = h.setup_complete ? "none" : "block";
+      }).catch(() => {});
+    }
+
+    // Motor Actions
+    async function manualStartMotor() {
+      const confirmChecked = document.getElementById("chk-confirm-motor").checked;
+      if (!confirmChecked) {
+        alert("Please confirm that water line is clear and safe.");
+        return;
+      }
+      try {
+        const res = await fetch("/api/motor/start", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ confirm: true }),
+        });
+        const data = await res.json();
+        if (!res.ok) alert(data.detail || data.message);
       } catch (e) {
         console.error(e);
       }
     }
 
-    // Emergency Stop
+    async function manualStopMotor() {
+      try {
+        await fetch("/api/motor/stop", { method: "POST", headers: getAuthHeaders() });
+      } catch (e) { console.error(e); }
+    }
+
+    async function resetMotorLockout() {
+      try {
+        const res = await fetch("/api/motor/reset", { method: "POST", headers: getAuthHeaders() });
+        const data = await res.json();
+        if (!res.ok) alert(data.detail || data.message);
+      } catch (e) { console.error(e); }
+    }
+
+    // Zone Irrigation Actions
+    async function triggerZoneWater(zoneId, durationSec = 15) {
+      try {
+        const res = await fetch(`/api/zones/${zoneId}/water`, {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ duration_seconds: durationSec }),
+        });
+        const data = await res.json();
+        if (!res.ok) alert(data.detail || data.message);
+      } catch (e) { console.error(e); }
+    }
+
+    async function stopZoneWater(zoneId) {
+      try {
+        await fetch(`/api/zones/${zoneId}/stop`, { method: "POST", headers: getAuthHeaders() });
+      } catch (e) { console.error(e); }
+    }
+
+    async function calibrateProbe(zoneId, step) {
+      if (!confirm(`Confirm probe is ready for ${step.toUpperCase()} calibration (${step === 'dry' ? 'in air' : 'submerged in water'})?`)) return;
+      try {
+        const res = await fetch(`/api/zones/${zoneId}/calibrate`, {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ step: step }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert(`Calibration point for ${zoneId} (${step}) recorded at ${data.captured_volts}V.`);
+        } else {
+          alert(data.detail || data.message);
+        }
+      } catch (e) { console.error(e); }
+    }
+
     async function triggerEmergencyStop() {
-      if (!confirm("Are you sure you want to trigger EMERGENCY STOP for all pumps?")) return;
+      if (!confirm("EMERGENCY: Kill all pumps and contactor immediately?")) return;
       try {
-        await fetch("/api/control/emergency-stop", { method: "POST" });
-      } catch (e) {
-        console.error(e);
-      }
+        await fetch("/api/control/emergency-stop", { method: "POST", headers: getAuthHeaders() });
+      } catch (e) { console.error(e); }
     }
 
-    // Reset Lockout
-    async function resetLockouts() {
-      try {
-        await fetch("/api/control/reset-lockout", { method: "POST" });
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    // Voice Test
-    async function testVoice() {
+    async function testVoiceAlert() {
       const text = document.getElementById("test-voice-input").value.trim();
       if (!text) return;
       try {
         await fetch("/api/control/speak", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text, priority: 1 })
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ text }),
         });
+      } catch (e) { console.error(e); }
+    }
+
+    // Wizard Functions
+    function nextWizardStep(stepNum) {
+      document.querySelectorAll(".wizard-step").forEach(el => el.classList.remove("active"));
+      const target = document.getElementById(`wstep-${stepNum}`);
+      if (target) target.classList.add("active");
+      document.getElementById("wizard-progress-badge").textContent = `Step ${stepNum} of 7`;
+
+      if (stepNum === 2) loadGpioinfo();
+      if (stepNum === 3) pollWizardInputs();
+    }
+
+    async function loadGpioinfo() {
+      const box = document.getElementById("wizard-gpioinfo-box");
+      try {
+        const res = await fetch("/api/gpioinfo");
+        const data = await res.json();
+        box.textContent = data.output || "No output returned.";
       } catch (e) {
-        console.error(e);
+        box.textContent = "Error executing gpioinfo.";
       }
     }
 
-    // Simulation Lab Handlers
-    async function setMockTank(liters) {
-      document.getElementById("sim-tank-val").textContent = `${liters}L`;
-      await fetch("/api/control/mock/set-tank", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ level_liters: Number(liters) })
-      });
+    async function pollWizardInputs() {
+      try {
+        const res = await fetch("/api/setup/test-input", { method: "POST", headers: getAuthHeaders() });
+        const data = await res.json();
+        const inputs = data.inputs || {};
+        document.getElementById("wtest-in1").textContent = inputs.tank_low === null ? "Not configured" : (inputs.tank_low ? "LOW (Tripped)" : "Normal");
+        document.getElementById("wtest-in2").textContent = inputs.interlock_out === null ? "Not configured" : (inputs.interlock_out ? "HIGH (Closed)" : "LOW (Broken)");
+        document.getElementById("wtest-in3").textContent = inputs.interlock_mid === null ? "Not configured" : (inputs.interlock_mid ? "HIGH (Closed)" : "LOW (Open)");
+        document.getElementById("wtest-in4").textContent = inputs.leak_detected === null ? "Not configured" : (inputs.leak_detected ? "TRIPPED" : "Normal");
+      } catch (e) { console.error(e); }
     }
 
-    async function setMockReservoir(liters) {
-      document.getElementById("sim-res-val").textContent = `${liters}L`;
-      await fetch("/api/control/mock/set-reservoir", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ level_liters: Number(liters) })
-      });
+    async function testRelayCycle() {
+      const confirmed = document.getElementById("wchk-motor-disconnected").checked;
+      if (!confirmed) {
+        alert("You must confirm that the motor is physically disconnected before testing.");
+        return;
+      }
+      try {
+        const res = await fetch("/api/setup/test-relay", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ motor_disconnected_confirmed: true }),
+        });
+        const data = await res.json();
+        alert(data.message || data.detail);
+      } catch (e) { console.error(e); }
     }
 
-    async function injectProbeFault(voltage) {
-      const ch = Number(document.getElementById("sim-probe-channel").value);
-      await fetch("/api/control/mock/set-probe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: ch, voltage: Number(voltage) })
-      });
+    async function finalizeSetupWizard() {
+      const confirmed = document.getElementById("wchk-complete-confirm").checked;
+      if (!confirmed) {
+        alert("You must certify that tests have passed.");
+        return;
+      }
+      try {
+        const res = await fetch("/api/setup/complete", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ confirm_all_passed: true }),
+        });
+        if (res.ok) {
+          alert("Commissioning completed! Controller is now in live operation.");
+          document.getElementById("wizard-alert-banner").style.display = "none";
+          switchTab("tab-circuit", document.getElementById("btn-nav-circuit"));
+        } else {
+          const err = await res.json();
+          alert(err.detail);
+        }
+      } catch (e) { console.error(e); }
     }
 
-    async function resetMockPhysics() {
-      await fetch("/api/control/mock/reset-physics", { method: "POST" });
-    }
-
-    // Events Journal Fetcher
     async function fetchEventJournal() {
       try {
-        const res = await fetch("/api/telemetry/events?limit=30");
-        if (res.ok) {
-          const json = await res.json();
-          const items = json.data || [];
-          const container = document.getElementById("events-journal-container");
-          if (items.length === 0) {
-            container.innerHTML = '<div style="padding:1rem; color:#94a3b8; text-align:center;">No recent events</div>';
-            return;
-          }
-          container.innerHTML = items.map(ev => `
-            <div style="padding: 0.5rem 0.75rem; border-bottom: 1px solid #f1f5f9;">
-              <span class="badge ${ev.severity === 'CRITICAL' ? 'badge-red' : 'badge-gray'}">${ev.severity}</span>
-              <span style="font-weight: 600; margin-left: 6px;">${ev.event_type}</span>: ${ev.message}
-            </div>
-          `).join("");
+        const res = await fetch("/api/events?limit=50", { headers: getAuthHeaders() });
+        const data = await res.json();
+        const container = document.getElementById("events-journal-container");
+        const items = data.data || [];
+        if (items.length === 0) {
+          container.innerHTML = `<div style="padding:1rem; color:#94a3b8; text-align:center;">No events logged yet. Database is clean.</div>`;
+          return;
         }
-      } catch (e) {
-        console.error(e);
-      }
+        container.innerHTML = items.map(ev => `
+          <div style="padding: 0.4rem 0.6rem; border-bottom: 1px solid #f1f5f9;">
+            <span class="badge ${ev.severity === 'CRITICAL' ? 'badge-red' : 'badge-gray'}">${ev.severity}</span>
+            <span style="font-weight:600; margin-left:6px;">${ev.event_type}</span>: ${ev.message}
+            <span style="color:#94a3b8; font-size:10px; margin-left:6px;">${ev.timestamp}</span>
+          </div>
+        `).join("");
+      } catch (e) { console.error(e); }
+    }
+
+    async function loadSettingsYaml() {
+      try {
+        const res = await fetch("/api/config", { headers: getAuthHeaders() });
+        const data = await res.json();
+        document.getElementById("settings-yaml-preview").textContent = JSON.stringify(data, null, 2);
+      } catch (e) { console.error(e); }
     }
 
     document.addEventListener("DOMContentLoaded", () => {
       connectSSE();
       fetchEventJournal();
+      loadSettingsYaml();
     });
   </script>
 </body>

@@ -1,6 +1,7 @@
 /**
- * Dynamic Interactive Circuit Schematic Visualizer for Radxa ROCK Pi S.
- * Controls SVG wire pulses, pin indicators, fluid levels, and impeller rotations.
+ * Hybrid Circuit Schematic Visualizer for Radxa ROCK Pi S + Wireless ESP32 Garden Node.
+ * Driven EXCLUSIVELY by live telemetry. Zero simulated or fabricated states.
+ * Missing or unconfigured components are displayed grey with "Not configured".
  */
 
 window.CircuitSchematic = {
@@ -9,7 +10,7 @@ window.CircuitSchematic = {
   init() {
     this.tooltipEl = document.getElementById("circuit-tooltip");
     this.attachNodeListeners();
-    console.log("CircuitSchematic visualizer initialized.");
+    console.log("Hybrid CircuitSchematic visualizer initialized.");
   },
 
   attachNodeListeners() {
@@ -22,12 +23,12 @@ window.CircuitSchematic = {
     });
   },
 
-  showTooltip(e, el, isClick = false) {
+  showTooltip(e, el) {
     if (!this.tooltipEl) return;
     const title = el.getAttribute("data-node-title") || "Component";
-    const pin = el.getAttribute("data-node-pin") || "N/A";
+    const pin = el.getAttribute("data-node-pin") || "Not configured";
     const desc = el.getAttribute("data-node-desc") || "";
-    const state = el.getAttribute("data-node-state") || "Idle";
+    const state = el.getAttribute("data-node-state") || "No reading yet";
 
     this.tooltipEl.innerHTML = `
       <div style="font-weight: 700; color: #38bdf8; margin-bottom: 2px;">${title}</div>
@@ -52,97 +53,107 @@ window.CircuitSchematic = {
   },
 
   /**
-   * Updates schematic visuals on each telemetry tick
+   * Updates hybrid topology visuals solely from live telemetry diffs.
    */
   updateTelemetry(state) {
     if (!state) return;
 
-    const sensors = state.sensors || {};
-    const actuators = state.actuators || {};
-    const probes = sensors.soil_probes || {};
-    const percentages = sensors.soil_percentages || {};
+    const he = state.head_end || {};
+    const motor = state.motor || {};
+    const garden = state.garden || {};
+    const zones = garden.zones || {};
 
-    // -------------------------------------------------------------------------
-    // 1. Digital Pin Status Indicators
-    // -------------------------------------------------------------------------
-    const tankLow = !!sensors.tank_low_float;
-    const tankHigh = !!sensors.tank_high_float;
-    const resEmpty = !!sensors.reservoir_low_float;
+    // 1. Head-End PC817 Optocoupler Inputs
+    const tankLow = he.tank_low_float;
+    const interlockOut = he.interlock_out;
+    const interlockMid = he.interlock_mid;
+    const leak = he.leak_detected;
+    const relayOn = he.contactor_relay;
+    const heStale = he.is_stale;
 
-    const acOn = !!actuators.ac_contactor;
-    const z1On = !!actuators.zone_1_pump;
-    const z2On = !!actuators.zone_2_pump;
-    const z3On = !!actuators.zone_3_pump;
-    const z4On = !!actuators.zone_4_pump;
-
-    this.setPinIndicator("pin-10", tankLow ? "#f59e0b" : "#10b981", tankLow ? "Tripped (Low)" : "Normal");
-    this.setPinIndicator("pin-11", tankHigh ? "#0284c7" : "#10b981", tankHigh ? "Tripped (Full)" : "Normal");
-    this.setPinIndicator("pin-12", resEmpty ? "#ef4444" : "#10b981", resEmpty ? "Tripped (Empty)" : "OK");
-
-    this.setPinIndicator("pin-13", acOn ? "#f97316" : "#64748b", acOn ? "HIGH (ON)" : "LOW (OFF)");
-    this.setPinIndicator("pin-15", z1On ? "#0284c7" : "#64748b", z1On ? "HIGH (ON)" : "LOW (OFF)");
-    this.setPinIndicator("pin-22", z2On ? "#0284c7" : "#64748b", z2On ? "HIGH (ON)" : "LOW (OFF)");
-    this.setPinIndicator("pin-23", z3On ? "#0284c7" : "#64748b", z3On ? "HIGH (ON)" : "LOW (OFF)");
-    this.setPinIndicator("pin-24", z4On ? "#0284c7" : "#64748b", z4On ? "HIGH (ON)" : "LOW (OFF)");
-
-    // -------------------------------------------------------------------------
-    // 2. Animated Wire Currents
-    // -------------------------------------------------------------------------
-    this.toggleWire("wire-ac-contactor", acOn);
-    this.toggleWire("wire-ac-motor", acOn);
-    this.toggleWire("wire-zone-1", z1On);
-    this.toggleWire("wire-zone-2", z2On);
-    this.toggleWire("wire-zone-3", z3On);
-    this.toggleWire("wire-zone-4", z4On);
-    this.toggleWire("wire-i2c", true); // I2C always active
-
-    // -------------------------------------------------------------------------
-    // 3. Rotating Impellers
-    // -------------------------------------------------------------------------
-    this.toggleImpeller("impeller-ac", acOn);
-    this.toggleImpeller("impeller-p1", z1On);
-    this.toggleImpeller("impeller-p2", z2On);
-    this.toggleImpeller("impeller-p3", z3On);
-    this.toggleImpeller("impeller-p4", z4On);
-
-    // -------------------------------------------------------------------------
-    // 4. Fluid Levels in Tanks
-    // -------------------------------------------------------------------------
-    // Overhead Tank Level (max height 80 in SVG)
-    const overheadEl = document.getElementById("water-overhead");
-    if (overheadEl) {
-      let pct = 50;
-      if (tankHigh) pct = 95;
-      else if (tankLow) pct = 20;
-      else pct = 60;
-
-      const maxHeight = 70;
-      const h = (pct / 100) * maxHeight;
-      const yBase = 150; // base y coordinate
-      overheadEl.setAttribute("height", Math.max(5, h));
-      overheadEl.setAttribute("y", yBase - h);
+    // IN1: Tank Low Float
+    if (tankLow === null || heStale) {
+      this.setPinIndicator("pin-in1", "#94a3b8", "No reading yet / Stale");
+    } else {
+      this.setPinIndicator("pin-in1", tankLow ? "#f59e0b" : "#10b981", tankLow ? "Tripped (Tank Low)" : "Normal (Covered)");
     }
 
-    // Reservoir Level (max height 70 in SVG)
-    const reservoirEl = document.getElementById("water-reservoir");
-    if (reservoirEl) {
-      let pct = resEmpty ? 12 : 75;
-      const maxHeight = 65;
-      const h = (pct / 100) * maxHeight;
-      const yBase = 390;
-      reservoirEl.setAttribute("height", Math.max(5, h));
-      reservoirEl.setAttribute("y", yBase - h);
+    // IN2: Interlock Out (HIGH = closed)
+    if (interlockOut === null || heStale) {
+      this.setPinIndicator("pin-in2", "#94a3b8", "No reading yet / Stale");
+    } else {
+      this.setPinIndicator("pin-in2", interlockOut ? "#10b981" : "#ef4444", interlockOut ? "HIGH (Chain Closed)" : "LOW (Interlock Broken)");
     }
 
-    // -------------------------------------------------------------------------
-    // 5. Update Dynamic Node Labels
-    // -------------------------------------------------------------------------
-    this.setNodeState("node-ac-contactor", acOn ? "ENERGIZED (25A Flowing)" : "DE-ENERGIZED (OFF)");
-    this.setNodeState("node-zone1-pump", z1On ? `RUNNING (Moisture ${percentages.zone_1 || 0}%)` : `IDLE (${percentages.zone_1 || 0}%)`);
-    this.setNodeState("node-zone2-pump", z2On ? `RUNNING (Moisture ${percentages.zone_2 || 0}%)` : `IDLE (${percentages.zone_2 || 0}%)`);
-    this.setNodeState("node-zone3-pump", z3On ? `RUNNING (Moisture ${percentages.zone_3 || 0}%)` : `IDLE (${percentages.zone_3 || 0}%)`);
-    this.setNodeState("node-zone4-pump", z4On ? `RUNNING (Moisture ${percentages.zone_4 || 0}%)` : `IDLE (${percentages.zone_4 || 0}%)`);
-    this.setNodeState("node-ads1115", `Probes: Z1=${probes.zone_1_voltage}V, Z2=${probes.zone_2_voltage}V, Z3=${probes.zone_3_voltage}V, Z4=${probes.zone_4_voltage}V`);
+    // IN3: Interlock Mid
+    if (interlockMid === null || heStale) {
+      this.setPinIndicator("pin-in3", "#94a3b8", "No reading yet / Stale");
+    } else {
+      this.setPinIndicator("pin-in3", interlockMid ? "#10b981" : "#f59e0b", interlockMid ? "HIGH (Full Float Closed)" : "LOW (Full Float Open)");
+    }
+
+    // IN4: Leak Sensor
+    if (leak === null || heStale) {
+      this.setPinIndicator("pin-in4", "#94a3b8", "No reading yet / Stale");
+    } else {
+      this.setPinIndicator("pin-in4", leak ? "#ef4444" : "#10b981", leak ? "TRIPPED (Water Leak Detected)" : "Normal (Dry)");
+    }
+
+    // Contactor Relay Output
+    this.setPinIndicator("pin-relay-out", relayOn ? "#f97316" : "#64748b", relayOn ? "HIGH (Energized)" : "LOW (De-energized)");
+    this.toggleWire("wire-contactor-coil", relayOn);
+    this.toggleImpeller("impeller-ac", relayOn);
+
+    // Interlock Cause description
+    const cause = he.interlock_cause || "unconfigured";
+    this.setNodeState("node-interlock-chain", `Status: ${cause.toUpperCase()}`);
+
+    // 2. Wireless Gateway & Link Status
+    const gatewayConnected = garden.gateway_connected;
+    const nodeOnline = garden.node_online;
+    const gStale = garden.is_stale;
+
+    const linkEl = document.getElementById("wire-wireless-link");
+    if (linkEl) {
+      if (nodeOnline && !gStale) {
+        linkEl.setAttribute("stroke", "#10b981");
+        linkEl.classList.add("wire-active");
+      } else {
+        linkEl.setAttribute("stroke", "#94a3b8");
+        linkEl.classList.remove("wire-active");
+      }
+    }
+    this.setNodeState("node-gateway", gatewayConnected ? `USB Connected (${garden.rssi ? garden.rssi + " dBm" : "Online"})` : "Not connected");
+    this.setNodeState("node-garden-node", nodeOnline && !gStale ? `ESP-NOW Online (Uptime ${garden.uptime_s || 0}s)` : "Offline / Stale");
+
+    // 3. Plant Drip Pumps
+    for (let i = 1; i <= 4; i++) {
+      const zKey = `zone_${i}`;
+      const zData = zones[zKey] || {};
+      const pumpRunning = !!zData.pump_running;
+      this.toggleImpeller(`impeller-p${i}`, pumpRunning);
+      this.toggleWire(`wire-zone-${i}`, pumpRunning);
+
+      const voltsStr = zData.voltage !== null ? `${zData.voltage}V` : "No reading yet";
+      const moistStr = zData.moisture_pct !== null ? `${zData.moisture_pct}%` : "Uncalibrated";
+      this.setNodeState(`node-pump-${i}`, pumpRunning ? `RUNNING (${moistStr})` : `OFF (${moistStr}, ${voltsStr})`);
+    }
+
+    // 4. Reservoir Wet Float
+    const resWet = garden.reservoir_wet;
+    const resPin = document.getElementById("pin-res-float");
+    if (resPin) {
+      if (resWet === null || gStale) {
+        resPin.setAttribute("fill", "#94a3b8");
+        this.setNodeState("node-reservoir", "No telemetry received");
+      } else if (resWet === true) {
+        resPin.setAttribute("fill", "#10b981");
+        this.setNodeState("node-reservoir", "Ample water (Float submerged)");
+      } else {
+        resPin.setAttribute("fill", "#ef4444");
+        this.setNodeState("node-reservoir", "DRY-RUN LOCK (Float open)");
+      }
+    }
   },
 
   setPinIndicator(id, color, stateDesc) {
