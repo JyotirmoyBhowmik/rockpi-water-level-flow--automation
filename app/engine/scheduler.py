@@ -259,12 +259,17 @@ class SystemScheduler:
                 await asyncio.sleep(5.0)
 
     async def _data_purge_loop(self) -> None:
-        """Daily loop: Purges database records older than configured retention."""
+        """Daily loop: Purges database records older than configured retention and dispatches summary."""
         while self._running:
             try:
                 await asyncio.sleep(86400)
                 await state_manager.purge_old_data()
                 logger.info("Database historical data retention purge executed.")
+                try:
+                    from app.engine.daily_summary import daily_summary_service
+                    await daily_summary_service.dispatch_daily_summary()
+                except Exception as sum_err:
+                    logger.error("Error dispatching daily summary in purge loop: %s", sum_err)
             except asyncio.CancelledError:
                 break
             except Exception as e:

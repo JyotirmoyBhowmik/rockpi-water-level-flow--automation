@@ -17,10 +17,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
+from app.api.metrics import generate_prometheus_metrics
 from app.api.routes_config import router as config_router
 from app.api.routes_control import router as control_router
 from app.api.routes_rules import router as rules_router
 from app.api.routes_telemetry import router as telemetry_router
+from app.alerts.mqtt_client import mqtt_client
+from app.alerts.ntfy_client import ntfy_notifier
 from app.alerts.telegram_client import telegram_notifier
 from app.config import DATA_DIR, system_config
 from app.core.event_bus import bus
@@ -81,6 +84,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await bus.start()
     await audio_controller.start()
     await telegram_notifier.start()
+    await ntfy_notifier.start()
+    await mqtt_client.start()
     await watchdog_manager.start()
 
     # 4. Initialize Hardware (Outputs start forced OFF)
@@ -143,6 +148,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await watchdog_manager.stop(disarm=False)
     else:
         await watchdog_manager.stop(disarm=True)
+    await mqtt_client.stop()
+    await ntfy_notifier.stop()
     await telegram_notifier.stop()
     await audio_controller.stop()
     await bus.stop()
@@ -218,7 +225,7 @@ def create_app() -> FastAPI:
             or (not system_config.setup_complete and request.url.path == "/api/gpioinfo")
         )
 
-        if not is_public and request.url.path.startswith("/api"):
+        if not is_public and (request.url.path.startswith("/api") or request.url.path == "/metrics"):
             auth_header = request.headers.get("Authorization")
             token = None
             if auth_header and auth_header.startswith("Bearer "):
@@ -322,6 +329,12 @@ def create_app() -> FastAPI:
             "uptime_seconds": state["uptime_seconds"],
             "setup_complete": system_config.setup_complete,
         }
+
+    @app.get("/metrics")
+    async def prometheus_metrics():
+        """Exposes Prometheus / OpenMetrics 0.0.4 text format telemetry behind Bearer auth."""
+        content = generate_prometheus_metrics()
+        return Response(content=content, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     return app
 

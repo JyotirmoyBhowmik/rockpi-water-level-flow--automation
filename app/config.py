@@ -293,9 +293,41 @@ class AudioConfig(BaseModel):
 
 
 class TelegramConfig(BaseModel):
-    enabled: bool = Field(default=False)
-    bot_token: Optional[str] = Field(default=None)
-    chat_id: Optional[str] = Field(default=None)
+    enabled: bool = Field(default=False, description="Enable Telegram bot notifications")
+    bot_token: Optional[str] = Field(default=None, description="Telegram bot API token")
+    chat_id: Optional[str] = Field(default=None, description="Telegram chat ID for alert delivery")
+
+
+class NtfyConfig(BaseModel):
+    """
+    Configuration for optional ntfy.sh push notification client.
+    Lightweight, privacy-respecting alternative/supplement to Telegram.
+    """
+    enabled: bool = Field(default=False, description="Enable ntfy.sh push notifications")
+    server_url: str = Field(default="https://ntfy.sh", description="ntfy server URL (e.g. https://ntfy.sh or self-hosted)")
+    topic: Optional[str] = Field(default=None, description="ntfy topic name for alert delivery")
+    access_token: Optional[SecretStr] = Field(default=None, description="Optional Bearer token for protected topics")
+    priority_default: int = Field(default=3, ge=1, le=5, description="Default priority level: 1 (min) to 5 (urgent)")
+
+
+class MQTTConfig(BaseModel):
+    """
+    Configuration for optional MQTT client with Home Assistant discovery.
+    Allows telemetry publishing and remote control through strict failsafe gates.
+    """
+    enabled: bool = Field(default=False, description="Enable optional MQTT publisher and remote control")
+    broker_host: str = Field(default="127.0.0.1", description="MQTT broker hostname or IP address")
+    broker_port: int = Field(default=1883, ge=1, le=65535, description="MQTT broker port (default 1883)")
+    username: Optional[str] = Field(default=None, description="MQTT broker authentication username")
+    password: Optional[SecretStr] = Field(default=None, description="MQTT broker authentication password")
+    client_id: str = Field(default="rockpi_smart_water", description="MQTT client ID")
+    topic_prefix: str = Field(default="smart_water", description="Base topic prefix for MQTT publications")
+    ha_discovery_enabled: bool = Field(default=True, description="Publish Home Assistant MQTT discovery payloads on connect")
+    ha_discovery_prefix: str = Field(default="homeassistant", description="Home Assistant MQTT discovery topic prefix")
+    publish_interval_s: float = Field(default=5.0, ge=1.0, le=60.0, description="Interval in seconds for state telemetry publishing")
+    tls_enabled: bool = Field(default=False, description="Enable TLS connection to MQTT broker")
+    tls_ca_cert: Optional[str] = Field(default=None, description="Path to custom CA certificate for TLS verification")
+    command_auth_required: bool = Field(default=True, description="Require valid Bearer token in command payload")
 
 
 class DatabaseConfig(BaseModel):
@@ -328,11 +360,12 @@ class SystemConfig(BaseModel):
     level_sensor: LevelSensorConfig = Field(default_factory=LevelSensorConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     zones: Dict[str, ZoneConfig] = Field(default_factory=lambda: {
-
         f"zone_{i}": ZoneConfig(name=f"Zone {i}", has_flow_meter=(i == 1)) for i in range(1, 5)
     })
     audio: AudioConfig = Field(default_factory=AudioConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    ntfy: NtfyConfig = Field(default_factory=NtfyConfig)
+    mqtt: MQTTConfig = Field(default_factory=MQTTConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
     setup_complete: bool = Field(default=False)
@@ -493,6 +526,8 @@ def save_settings(cfg: SystemConfig) -> bool:
         "motor": cfg.motor.model_dump(mode="json"),
         "zones": {k: v.model_dump(mode="json") for k, v in cfg.zones.items()},
         "telegram": cfg.telegram.model_dump(mode="json"),
+        "ntfy": cfg.ntfy.model_dump(mode="json"),
+        "mqtt": cfg.mqtt.model_dump(mode="json"),
         "setup_complete": cfg.setup_complete,
         "setup_checks": cfg.setup_checks.model_dump(mode="json"),
         "restart_required": cfg.restart_required,

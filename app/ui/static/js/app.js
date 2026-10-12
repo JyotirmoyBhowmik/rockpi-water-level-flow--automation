@@ -41,6 +41,9 @@ function switchTab(tabId, btn) {
     const matchingBtn = document.querySelector(`[data-action="switch-tab"][data-tab="${tabId}"]`);
     if (matchingBtn) matchingBtn.classList.add("active");
   }
+  if (tabId === "tab-history") {
+    fetchHistoricalCharts(currentChartWindow);
+  }
 }
 
 function saveTokenToBrowser() {
@@ -569,6 +572,290 @@ function saveSettingsForm() {
   alert("Configuration file is managed on host at /etc/smart-water/config.yaml.");
 }
 
+// =============================================================================
+// Lightweight Pure SVG Charting Engine (Zero External Dependencies)
+// =============================================================================
+let currentChartWindow = "24h";
+
+function renderSvgLineChart(containerId, seriesList, options = {}) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const width = options.width || 560;
+  const height = options.height || 200;
+  const pad = { top: 20, right: 25, bottom: 30, left: 45 };
+
+  let allPoints = [];
+  seriesList.forEach((s) => {
+    if (Array.isArray(s.data)) {
+      s.data.forEach((pt) => {
+        if (pt.y !== null && pt.y !== undefined && !isNaN(pt.y)) {
+          allPoints.push(pt);
+        }
+      });
+    }
+  });
+
+  if (allPoints.length === 0) {
+    container.innerHTML = '<div style="padding: 2.5rem; color: #94a3b8; font-size: 12px; text-align: center;">No sensor telemetry recorded in this time window yet (logs downsampled every 60s).</div>';
+    return;
+  }
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = options.yMin !== undefined ? options.yMin : Infinity;
+  let maxY = options.yMax !== undefined ? options.yMax : -Infinity;
+
+  allPoints.forEach((pt) => {
+    if (pt.x < minX) minX = pt.x;
+    if (pt.x > maxX) maxX = pt.x;
+    if (options.yMin === undefined && pt.y < minY) minY = pt.y;
+    if (options.yMax === undefined && pt.y > maxY) maxY = pt.y;
+  });
+
+  if (minX === maxX) {
+    minX -= 60000;
+    maxX += 60000;
+  }
+  if (minY === maxY) {
+    minY -= 1;
+    maxY += 1;
+  }
+  if (minY === Infinity) minY = 0;
+  if (maxY === -Infinity) maxY = 1;
+
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+
+  function toX(val) {
+    return pad.left + ((val - minX) / (maxX - minX)) * plotW;
+  }
+  function toY(val) {
+    return pad.top + plotH - ((val - minY) / (maxY - minY)) * plotH;
+  }
+
+  const svgParts = [];
+  svgParts.push(`<svg viewBox="0 0 ${width} ${height}" style="width: 100%; height: auto; display: block; overflow: visible;">`);
+
+  // Grid lines & Y labels (horizontal grid lines)
+  const steps = 3;
+  for (let i = 0; i <= steps; i++) {
+    const yVal = minY + (i / steps) * (maxY - minY);
+    const yPx = toY(yVal);
+    svgParts.push(`<line x1="${pad.left}" y1="${yPx.toFixed(1)}" x2="${width - pad.right}" y2="${yPx.toFixed(1)}" stroke="#f1f5f9" stroke-width="1" />`);
+    const label = (options.yDecimals !== undefined ? yVal.toFixed(options.yDecimals) : yVal.toFixed(1)) + (options.yUnit || "");
+    svgParts.push(`<text x="${pad.left - 6}" y="${(yPx + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#94a3b8" font-family="sans-serif">${escapeHtml(label)}</text>`);
+  }
+
+  // X labels (start and end timestamps)
+  const startDate = new Date(minX);
+  const endDate = new Date(maxX);
+  const startStr = `${String(startDate.getHours()).padStart(2, '0')}:${String(startDate.getMinutes()).padStart(2, '0')}`;
+  const endStr = `${String(endDate.getHours()).padStart(2, '0')}:${String(endDate.getMinutes()).padStart(2, '0')}`;
+  svgParts.push(`<text x="${pad.left}" y="${height - 8}" text-anchor="start" font-size="9" fill="#94a3b8" font-family="sans-serif">${startStr}</text>`);
+  svgParts.push(`<text x="${width - pad.right}" y="${height - 8}" text-anchor="end" font-size="9" fill="#94a3b8" font-family="sans-serif">${endStr}</text>`);
+
+  // Render each series line
+  seriesList.forEach((s) => {
+    if (!Array.isArray(s.data) || s.data.length === 0) return;
+    const pts = s.data.filter((pt) => pt.y !== null && pt.y !== undefined && !isNaN(pt.y));
+    if (pts.length === 0) return;
+
+    let pathD = "";
+    if (s.stepLine) {
+      pts.forEach((pt, idx) => {
+        const cx = toX(pt.x).toFixed(1);
+        const cy = toY(pt.y).toFixed(1);
+        if (idx === 0) {
+          pathD += `M ${cx} ${cy}`;
+        } else {
+          pathD += ` H ${cx} V ${cy}`;
+        }
+      });
+    } else {
+      pts.forEach((pt, idx) => {
+        const cx = toX(pt.x).toFixed(1);
+        const cy = toY(pt.y).toFixed(1);
+        pathD += (idx === 0 ? "M " : " L ") + `${cx} ${cy}`;
+      });
+    }
+
+    svgParts.push(`<path d="${pathD}" fill="none" stroke="${s.color || '#0284c7'}" stroke-width="${s.strokeWidth || 2}" stroke-linecap="round" stroke-linejoin="round" />`);
+
+    if (pts.length <= 40 && !s.stepLine) {
+      pts.forEach((pt) => {
+        svgParts.push(`<circle cx="${toX(pt.x).toFixed(1)}" cy="${toY(pt.y).toFixed(1)}" r="2.5" fill="${s.color || '#0284c7'}" />`);
+      });
+    }
+  });
+
+  svgParts.push("</svg>");
+  container.innerHTML = svgParts.join("");
+}
+
+async function fetchHistoricalCharts(windowStr = "24h") {
+  const hoursMap = { "1h": 1, "6h": 6, "24h": 24, "48h": 48 };
+  const hours = hoursMap[windowStr] || 24;
+  const fromDate = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+
+  // 1. Fetch 24h Summary data
+  fetch(`/api/summary/daily?hours=${hours}`, { headers: getAuthHeaders() })
+    .then((r) => r.json())
+    .then((resp) => {
+      if (resp && resp.status === "success" && resp.data) {
+        updateDailySummaryCard(resp.data);
+      }
+    })
+    .catch((err) => console.warn("Summary fetch error:", err));
+
+  // 2. Fetch readings history
+  try {
+    const res = await fetch(`/api/history?limit=300&from=${encodeURIComponent(fromDate)}`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) return;
+    const json = await res.json();
+    const rows = (json.data || []).reverse(); // oldest first for chronological plotting
+
+    const z1 = [];
+    const z2 = [];
+    const z3 = [];
+    const z4 = [];
+    const motorPts = [];
+    const flowPts = [];
+    const tankPts = [];
+
+    rows.forEach((row) => {
+      const t = new Date(row.timestamp).getTime();
+      if (isNaN(t)) return;
+      if (row.z1_volts !== null && row.z1_volts !== undefined) z1.push({ x: t, y: row.z1_volts });
+      if (row.z2_volts !== null && row.z2_volts !== undefined) z2.push({ x: t, y: row.z2_volts });
+      if (row.z3_volts !== null && row.z3_volts !== undefined) z3.push({ x: t, y: row.z3_volts });
+      if (row.z4_volts !== null && row.z4_volts !== undefined) z4.push({ x: t, y: row.z4_volts });
+
+      if (row.motor_running !== null && row.motor_running !== undefined) {
+        motorPts.push({ x: t, y: row.motor_running });
+      }
+      if (row.z1_flow !== null && row.z1_flow !== undefined) {
+        flowPts.push({ x: t, y: row.z1_flow });
+      }
+      if (row.tank_low !== null && row.tank_low !== undefined) {
+        tankPts.push({ x: t, y: row.tank_low === 0 ? 100 : 20 });
+      }
+    });
+
+    renderSvgLineChart("chart-soil-container", [
+      { name: "Zone 1", color: "#0284c7", data: z1 },
+      { name: "Zone 2", color: "#10b981", data: z2 },
+      { name: "Zone 3", color: "#f59e0b", data: z3 },
+      { name: "Zone 4", color: "#8b5cf6", data: z4 },
+    ], { yUnit: "V", yMin: 0.0, yMax: 3.3, yDecimals: 2 });
+
+    renderSvgLineChart("chart-motor-container", [
+      { name: "Motor State", color: "#0284c7", data: motorPts, stepLine: true, strokeWidth: 2.5 },
+      { name: "Flow Pulses", color: "#3b82f6", data: flowPts },
+    ], { yMin: 0, yMax: 1, yDecimals: 0 });
+
+    fetchLevelConsumptionChart(hours, tankPts);
+  } catch (err) {
+    console.error("Historical chart fetch failed:", err);
+  }
+}
+
+async function fetchLevelConsumptionChart(hours, fallbackTankPts) {
+  try {
+    const res = await fetch(`/api/level/consumption?hours=${hours}`, { headers: getAuthHeaders() });
+    if (!res.ok) {
+      renderSvgLineChart("chart-level-container", [
+        { name: "Water Level", color: "#0284c7", data: fallbackTankPts },
+      ], { yUnit: "%", yMin: 0, yMax: 100, yDecimals: 0 });
+      return;
+    }
+    const resp = await res.json();
+    const hourly = resp.data?.hourly_usage || [];
+    const levelPts = [];
+    const consPts = [];
+
+    hourly.forEach((item) => {
+      const t = new Date(item.hour).getTime();
+      if (!isNaN(t)) {
+        if (item.litres !== null && item.litres !== undefined) consPts.push({ x: t, y: item.litres });
+        if (item.level_pct !== null && item.level_pct !== undefined) levelPts.push({ x: t, y: item.level_pct });
+      }
+    });
+
+    const series = [];
+    if (levelPts.length > 0) {
+      series.push({ name: "Water Level %", color: "#0284c7", data: levelPts });
+    } else if (fallbackTankPts && fallbackTankPts.length > 0) {
+      series.push({ name: "Water Level %", color: "#0284c7", data: fallbackTankPts });
+    }
+    if (consPts.length > 0) {
+      series.push({ name: "Hourly Consumption (L)", color: "#10b981", data: consPts });
+    }
+
+    renderSvgLineChart("chart-level-container", series, { yDecimals: 1 });
+  } catch (err) {
+    renderSvgLineChart("chart-level-container", [
+      { name: "Water Level", color: "#0284c7", data: fallbackTankPts },
+    ], { yUnit: "%", yMin: 0, yMax: 100, yDecimals: 0 });
+  }
+}
+
+function updateDailySummaryCard(data) {
+  if (!data) return;
+  const m = data.motor || {};
+  const elRuntime = document.getElementById("summary-motor-runtime");
+  if (elRuntime) elRuntime.textContent = `${m.runtime_s || 0}s`;
+  const elStarts = document.getElementById("summary-motor-starts");
+  if (elStarts) elStarts.textContent = `${m.starts || 0} starts`;
+  const elPumped = document.getElementById("summary-water-pumped");
+  if (elPumped) elPumped.textContent = `~${m.est_litres || 0} L`;
+  const elEnergy = document.getElementById("summary-motor-energy");
+  if (elEnergy) elEnergy.textContent = `${m.energy_kwh || 0} kWh`;
+
+  const zones = data.zones || {};
+  let totalIrrL = 0;
+  let totalRuns = 0;
+  Object.values(zones).forEach((z) => {
+    totalIrrL += z.litres || 0;
+    totalRuns += z.runs || 0;
+  });
+  const elIrr = document.getElementById("summary-irrigation-total");
+  if (elIrr) elIrr.textContent = `${totalIrrL.toFixed(1)} L`;
+  const elIrrRuns = document.getElementById("summary-irrigation-runs");
+  if (elIrrRuns) elIrrRuns.textContent = `${totalRuns} total cycles`;
+
+  const alarms = data.alarms || [];
+  const elAlarms = document.getElementById("summary-alarms-count");
+  if (elAlarms) {
+    elAlarms.textContent = alarms.length;
+    elAlarms.style.color = alarms.length > 0 ? "#dc2626" : "#0f172a";
+  }
+  const elAlarmStatus = document.getElementById("summary-alarms-status");
+  if (elAlarmStatus) {
+    elAlarmStatus.textContent = alarms.length > 0 ? `${alarms.length} safety trips logged` : "All interlocks healthy";
+    elAlarmStatus.style.color = alarms.length > 0 ? "#dc2626" : "#10b981";
+  }
+}
+
+async function triggerDailySummarySend() {
+  try {
+    const res = await fetch("/api/summary/daily/send?hours=24", {
+      method: "POST",
+      headers: getAuthHeaders(),
+    });
+    if (res.ok) {
+      alert("24-Hour summary digest dispatched to Telegram and ntfy!");
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert("Failed to send summary: " + (err.message || res.statusText));
+    }
+  } catch (err) {
+    alert("Error sending daily summary: " + err);
+  }
+}
+
 // Global Delegated Event Listeners (Strict CSP compliant)
 document.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-action]");
@@ -656,6 +943,21 @@ document.addEventListener("click", (e) => {
       break;
     case "rules-refresh":
       if (window.RulesBuilder) window.RulesBuilder.fetchRules();
+      break;
+    case "set-chart-window": {
+      const win = btn.getAttribute("data-window") || "24h";
+      document.querySelectorAll(".chart-window-btn").forEach((b) => {
+        b.className = b === btn ? "btn btn-primary btn-sm chart-window-btn" : "btn btn-secondary btn-sm chart-window-btn";
+      });
+      currentChartWindow = win;
+      fetchHistoricalCharts(win);
+      break;
+    }
+    case "refresh-charts":
+      fetchHistoricalCharts(currentChartWindow);
+      break;
+    case "send-daily-summary":
+      triggerDailySummarySend();
       break;
     default:
       break;

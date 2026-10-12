@@ -98,6 +98,9 @@
       <button class="nav-tab-btn" id="btn-nav-journal" data-action="switch-tab" data-tab="tab-journal">
         📜 Events &amp; Database Backup
       </button>
+      <button class="nav-tab-btn" id="btn-nav-history" data-action="switch-tab" data-tab="tab-history">
+        📈 Historical Charts
+      </button>
     </nav>
 
     <!-- ================================================================= -->
@@ -748,6 +751,115 @@
           <button class="btn btn-primary" id="btn-download-backup" data-action="download-backup" style="display: inline-flex; align-items: center; gap: 6px;">
             ⬇️ Download SQLite Backup (.db)
           </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- TAB 7: HISTORICAL TELEMETRY CHARTS (PURE SVG, ZERO DEPENDENCY)    -->
+    <!-- ================================================================= -->
+    <section id="tab-history" class="tab-pane" style="display: none;">
+      <!-- Controls Bar -->
+      <div class="flex items-center justify-between flex-wrap gap-3" style="margin-bottom: 1rem;">
+        <div class="flex items-center gap-2">
+          <span style="font-size: 13px; font-weight: 600; color: #475569;">Time Window:</span>
+          <button class="btn btn-secondary btn-sm chart-window-btn" data-action="set-chart-window" data-window="1h">1h</button>
+          <button class="btn btn-secondary btn-sm chart-window-btn" data-action="set-chart-window" data-window="6h">6h</button>
+          <button class="btn btn-primary btn-sm chart-window-btn" data-action="set-chart-window" data-window="24h">24h</button>
+          <button class="btn btn-secondary btn-sm chart-window-btn" data-action="set-chart-window" data-window="48h">48h</button>
+        </div>
+        <div class="flex items-center gap-2">
+          <button class="btn btn-secondary btn-sm" data-action="refresh-charts">🔄 Refresh Charts</button>
+          <button class="btn btn-secondary btn-sm" data-action="send-daily-summary">📩 Send 24h Summary Alert</button>
+        </div>
+      </div>
+
+      <!-- 24h Summary Digest Card -->
+      <div class="card" style="margin-bottom: 1.25rem; background: #f8fafc; border-left: 4px solid #0284c7;">
+        <div class="card-header">
+          <div class="flex items-center gap-2">
+            <span style="font-size: 16px;">📊</span>
+            <h2 style="font-size: 0.95rem; font-weight: 700; color: #0f172a; margin: 0;">24-Hour Operational Digest</h2>
+          </div>
+          <span class="badge badge-gray" id="summary-period-badge">Past 24 Hours</span>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3" style="font-size: 12px; margin-top: 8px;">
+          <div style="background: white; padding: 10px; border-radius: 6px; border: 1px solid #e2e8f0;">
+            <div style="color: #64748b; font-size: 11px;">Motor Runtime</div>
+            <div style="font-size: 16px; font-weight: 700; color: #0f172a;" id="summary-motor-runtime">0s</div>
+            <div style="color: #94a3b8; font-size: 10px;" id="summary-motor-starts">0 starts</div>
+          </div>
+          <div style="background: white; padding: 10px; border-radius: 6px; border: 1px solid #e2e8f0;">
+            <div style="color: #64748b; font-size: 11px;">Est. Water Pumped</div>
+            <div style="font-size: 16px; font-weight: 700; color: #0284c7;" id="summary-water-pumped">~0 L</div>
+            <div style="color: #94a3b8; font-size: 10px;" id="summary-motor-energy">0.0 kWh</div>
+          </div>
+          <div style="background: white; padding: 10px; border-radius: 6px; border: 1px solid #e2e8f0;">
+            <div style="color: #64748b; font-size: 11px;">Irrigation Delivered</div>
+            <div style="font-size: 16px; font-weight: 700; color: #10b981;" id="summary-irrigation-total">0.0 L</div>
+            <div style="color: #94a3b8; font-size: 10px;" id="summary-irrigation-runs">4 zones monitored</div>
+          </div>
+          <div style="background: white; padding: 10px; border-radius: 6px; border: 1px solid #e2e8f0;">
+            <div style="color: #64748b; font-size: 11px;">Safety Trips &amp; Alarms</div>
+            <div style="font-size: 16px; font-weight: 700; color: #0f172a;" id="summary-alarms-count">0</div>
+            <div style="color: #10b981; font-size: 10px;" id="summary-alarms-status">All interlocks healthy</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Charts Grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- Chart 1: Soil Moisture Probes -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2 style="font-size: 0.95rem; font-weight: 700;">Soil Probes (Zones 1 - 4 Voltage)</h2>
+              <p style="font-size: 11px; color: #64748b;">Capacitive probe raw analog voltage (V) over time</p>
+            </div>
+            <div class="flex items-center gap-2" style="font-size: 10px;">
+              <span style="color: #0284c7; font-weight: 600;">● Z1</span>
+              <span style="color: #10b981; font-weight: 600;">● Z2</span>
+              <span style="color: #f59e0b; font-weight: 600;">● Z3</span>
+              <span style="color: #8b5cf6; font-weight: 600;">● Z4</span>
+            </div>
+          </div>
+          <div id="chart-soil-container" style="width: 100%; min-height: 220px; display: flex; align-items: center; justify-content: center; overflow-x: auto;">
+            <span style="color: #94a3b8; font-size: 12px;">Loading probe history...</span>
+          </div>
+        </div>
+
+        <!-- Chart 2: Motor Activity & Contactor State -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2 style="font-size: 0.95rem; font-weight: 700;">Motor Contactor &amp; Flow Pulses</h2>
+              <p style="font-size: 11px; color: #64748b;">Contactor state (1=ON, 0=OFF) and Zone 1 flow meter</p>
+            </div>
+            <div class="flex items-center gap-2" style="font-size: 10px;">
+              <span style="color: #0284c7; font-weight: 600;">● Motor State</span>
+              <span style="color: #3b82f6; font-weight: 600;">■ Flow Pulses</span>
+            </div>
+          </div>
+          <div id="chart-motor-container" style="width: 100%; min-height: 220px; display: flex; align-items: center; justify-content: center; overflow-x: auto;">
+            <span style="color: #94a3b8; font-size: 12px;">Loading motor activity...</span>
+          </div>
+        </div>
+
+        <!-- Chart 3: Overhead Tank Level & Consumption -->
+        <div class="card" style="grid-column: span 1 / -1;">
+          <div class="card-header">
+            <div>
+              <h2 style="font-size: 0.95rem; font-weight: 700;">Tank Level &amp; Household Consumption Trends</h2>
+              <p style="font-size: 11px; color: #64748b;">Continuous hydrostatic depth &amp; consumption accounting</p>
+            </div>
+            <div class="flex items-center gap-2" style="font-size: 10px;">
+              <span style="color: #0284c7; font-weight: 600;">● Water Level %</span>
+              <span style="color: #10b981; font-weight: 600;">● Hourly Consumption (L)</span>
+            </div>
+          </div>
+          <div id="chart-level-container" style="width: 100%; min-height: 220px; display: flex; align-items: center; justify-content: center; overflow-x: auto;">
+            <span style="color: #94a3b8; font-size: 12px;">Loading level history...</span>
+          </div>
         </div>
       </div>
     </section>

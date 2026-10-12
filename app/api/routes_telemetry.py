@@ -175,6 +175,35 @@ async def get_readings_history(
     return {"status": "success", "count": len(data), "data": data}
 
 
+@router.get("/summary/daily")
+async def get_daily_summary(
+    hours: int = Query(default=24, ge=1, le=168, description="Number of past hours for summary"),
+) -> Dict[str, Any]:
+    """Returns 24h operational summary digest (motor runtime, starts, litres, irrigation per zone, alarms)."""
+    from app.engine.daily_summary import daily_summary_service
+    data = await daily_summary_service.get_summary_data(hours=hours)
+    formatted = daily_summary_service.format_summary_message(data)
+    return {
+        "status": "success",
+        "data": data,
+        "message": formatted,
+    }
+
+
+@router.post("/summary/daily/send")
+async def dispatch_daily_summary(
+    hours: int = Query(default=24, ge=1, le=168, description="Number of past hours for summary"),
+) -> Dict[str, Any]:
+    """Dispatches 24h summary digest to Telegram and ntfy alerting channels."""
+    from app.engine.daily_summary import daily_summary_service
+    data = await daily_summary_service.dispatch_daily_summary(hours=hours)
+    return {
+        "status": "success",
+        "message": "Daily summary dispatched to configured notification channels.",
+        "data": data,
+    }
+
+
 @router.get("/backup")
 async def backup_database():
     """

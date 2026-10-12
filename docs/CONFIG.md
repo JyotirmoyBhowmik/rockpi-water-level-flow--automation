@@ -191,6 +191,30 @@ telegram:
   bot_token: null
   chat_id: null
 
+# ntfy.sh Push Notifications (Alternative / Supplement to Telegram)
+ntfy:
+  enabled: false
+  server_url: "https://ntfy.sh"
+  topic: null
+  access_token: null
+  priority_default: 3
+
+# MQTT Broker & Home Assistant Discovery
+mqtt:
+  enabled: false
+  broker_host: "127.0.0.1"
+  broker_port: 1883
+  username: null
+  password: null
+  client_id: "rockpi_smart_water"
+  topic_prefix: "smart_water"
+  ha_discovery_enabled: true
+  ha_discovery_prefix: "homeassistant"
+  publish_interval_s: 5.0
+  tls_enabled: false
+  tls_ca_cert: null
+  command_auth_required: true
+
 # SQLite WAL Database
 database:
   path: "/var/lib/smart-water/system.db"
@@ -417,9 +441,41 @@ Configures out-of-band push notification dispatch for critical hardware alarms.
 
 | Field | Type | Default | Constraints | Description |
 |---|---|---|---|---|
-| `enabled` | `bool` | `false` | - | - |
-| `bot_token` | `Optional[str]` | `null` | - | - |
-| `chat_id` | `Optional[str]` | `null` | - | - |
+| `enabled` | `bool` | `false` | - | Enable Telegram bot notifications |
+| `bot_token` | `Optional[str]` | `null` | - | Telegram bot API token |
+| `chat_id` | `Optional[str]` | `null` | - | Telegram chat ID for alert delivery |
+
+### NtfyConfig (`ntfy`)
+
+Configures push notification dispatch via ntfy.sh (or self-hosted ntfy server) as an alternative or supplement to Telegram.
+
+| Field | Type | Default | Constraints | Description |
+|---|---|---|---|---|
+| `enabled` | `bool` | `false` | - | Enable ntfy.sh push notifications |
+| `server_url` | `str` | `https://ntfy.sh` | - | ntfy server URL (e.g. https://ntfy.sh or self-hosted) |
+| `topic` | `Optional[str]` | `null` | - | ntfy topic name for alert delivery |
+| `access_token` | `Optional[SecretStr]` | `null` | - | Optional Bearer token for protected topics |
+| `priority_default` | `int` | `3` | >= 1, <= 5 | Default priority level: 1 (min) to 5 (urgent) |
+
+### MQTTConfig (`mqtt`)
+
+Configures optional MQTT telemetry publishing and Home Assistant discovery, plus authenticated remote command handling gated by safety failsafes.
+
+| Field | Type | Default | Constraints | Description |
+|---|---|---|---|---|
+| `enabled` | `bool` | `false` | - | Enable optional MQTT publisher and remote control |
+| `broker_host` | `str` | `127.0.0.1` | - | MQTT broker hostname or IP address |
+| `broker_port` | `int` | `1883` | >= 1, <= 65535 | MQTT broker port (default 1883) |
+| `username` | `Optional[str]` | `null` | - | MQTT broker authentication username |
+| `password` | `Optional[SecretStr]` | `null` | - | MQTT broker authentication password |
+| `client_id` | `str` | `rockpi_smart_water` | - | MQTT client ID |
+| `topic_prefix` | `str` | `smart_water` | - | Base topic prefix for MQTT publications |
+| `ha_discovery_enabled` | `bool` | `true` | - | Publish Home Assistant MQTT discovery payloads on connect |
+| `ha_discovery_prefix` | `str` | `homeassistant` | - | Home Assistant MQTT discovery topic prefix |
+| `publish_interval_s` | `float` | `5.0` | >= 1.0, <= 60.0 | Interval in seconds for state telemetry publishing |
+| `tls_enabled` | `bool` | `false` | - | Enable TLS connection to MQTT broker |
+| `tls_ca_cert` | `Optional[str]` | `null` | - | Path to custom CA certificate for TLS verification |
+| `command_auth_required` | `bool` | `true` | - | Require valid Bearer token in command payload |
 
 ### DatabaseConfig (`database`)
 

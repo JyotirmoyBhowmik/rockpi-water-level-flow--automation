@@ -43,7 +43,13 @@ class TelegramNotifier:
         logger.info("Telegram notification worker started.")
 
     async def send_alert(self, event_type: str, message: str) -> None:
-        """Enqueues an alert message for transmission (plain text, no parse_mode)."""
+        """Enqueues an alert message for transmission to Telegram and ntfy."""
+        try:
+            from app.alerts.ntfy_client import ntfy_notifier
+            await ntfy_notifier.send_alert(event_type, message)
+        except Exception as e:
+            logger.debug("Could not dispatch alert to ntfy: %s", e)
+
         if not self._running or self._queue is None:
             return
 
