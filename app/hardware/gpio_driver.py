@@ -137,7 +137,9 @@ class HeadEndGPIODriver:
     def __init__(self):
         self._backend: Optional[GPIOBackend] = None
         self._hardware_available = False
-        self._relay_state = False  # Logical energized state (True = energized)
+        self._relay_state: Optional[bool] = False  # Logical energized state (True = energized)
+        self._relay_state_known: bool = False
+        self._last_commanded_relay_state: Optional[bool] = None
         self._relay_pin: Optional[int] = None
         self._feedback_pin: Optional[int] = None
         # Immutable startup polarity settings
@@ -150,8 +152,17 @@ class HeadEndGPIODriver:
         return self._hardware_available
 
     @property
-    def relay_state(self) -> bool:
-        return self._relay_state
+    def relay_state(self) -> Optional[bool]:
+        """Returns True if energized, False if de-energized, or None if state is unknown."""
+        return self._relay_state if self._relay_state_known else None
+
+    @property
+    def relay_state_known(self) -> bool:
+        return self._relay_state_known
+
+    @property
+    def last_commanded_relay_state(self) -> Optional[bool]:
+        return self._last_commanded_relay_state
 
     async def setup(self) -> bool:
         """
@@ -200,8 +211,11 @@ class HeadEndGPIODriver:
                 if not self._backend.request_output(
                     self._relay_pin, consumer="smart-water-contactor", initial_value=deenergized_val
                 ):
+                    self._relay_state_known = False
                     return False
                 self._relay_state = False
+                self._relay_state_known = True
+                self._last_commanded_relay_state = False
 
             # Setup Optocoupled Inputs
             for pin_name, pin_offset in [
@@ -297,10 +311,15 @@ class HeadEndGPIODriver:
                     raw_levels[pin_name] = None
                     raw_logical[pin_name] = None
 
-            return raw_levels, raw_logical
+            feedback_val = None
+            if self._feedback_pin is not None:
+                raw_fb = self._backend.get_value(self._feedback_pin)
+                feedback_val = _decode(raw_fb, cfg.feedback_active_low)
+
+            return raw_levels, raw_logical, feedback_val
 
         try:
-            raw_levels, raw_logical = await asyncio.wait_for(asyncio.to_thread(_sync_read), timeout=1.0)
+            raw_levels, raw_logical, feedback_val = await asyncio.wait_for(asyncio.to_thread(_sync_read), timeout=1.0)
 
             # Apply software debouncing
             debounced: Dict[str, Optional[bool]] = {}
@@ -319,8 +338,10 @@ class HeadEndGPIODriver:
                 "leak_sensor": debounced["leak_sensor"],
                 "tank_low": debounced["tank_low_float"],
                 "leak_detected": debounced["leak_sensor"],
+                "contactor_feedback": feedback_val,
                 "raw": {
                     **raw_logical,
+                    "contactor_feedback": feedback_val,
                     "raw_levels": raw_levels,
                 },
                 "debounced": debounced,
@@ -334,11 +355,13 @@ class HeadEndGPIODriver:
                 "leak_sensor": None,
                 "tank_low": None,
                 "leak_detected": None,
+                "contactor_feedback": None,
                 "raw": {
                     "tank_low_float": None,
                     "interlock_out": None,
                     "interlock_mid": None,
                     "leak_sensor": None,
+                    "contactor_feedback": None,
                     "raw_levels": {},
                 },
                 "debounced": {
@@ -371,11 +394,14 @@ class HeadEndGPIODriver:
         Drives the 25A contactor relay driver.
         Energized=True closes the contactor.
         Enforces polarity and wraps in 1.0s timeout.
+        Tracks _relay_state_known and _last_commanded_relay_state.
+        On timeout/exception sets _relay_state_known=False and never claims OFF when unknown.
         """
         async with self._lock:
+            self._last_commanded_relay_state = energized
             if not self._hardware_available or not self._backend or self._relay_pin is None:
                 logger.warning("Cannot set contactor: GPIO hardware not available.")
-                self._relay_state = False
+                self._relay_state_known = False
                 return False
 
             # Polarity calculation: active_high True -> energized=1, deenergized=0
@@ -386,6 +412,7 @@ class HeadEndGPIODriver:
             def _sync_set():
                 self._backend.set_value(self._relay_pin, electrical_val)
                 self._relay_state = energized
+                self._relay_state_known = True
 
             try:
                 await asyncio.wait_for(asyncio.to_thread(_sync_set), timeout=1.0)
@@ -393,16 +420,16 @@ class HeadEndGPIODriver:
                 return True
             except asyncio.TimeoutError:
                 logger.critical("Timeout (1s) driving contactor relay pin!")
-                self._relay_state = False
+                self._relay_state_known = False
                 return False
             except Exception as e:
                 logger.critical("Exception driving contactor relay: %s", e)
-                self._relay_state = False
+                self._relay_state_known = False
                 return False
 
     async def force_all_outputs_off(self) -> None:
         """Failsafe shutdown: unconditionally de-energizes contactor relay."""
-        self._relay_state = False
+        self._last_commanded_relay_state = False
         if self._hardware_available and self._backend and self._relay_pin is not None:
             deenergized_val = 0 if self._active_high else 1
             try:
@@ -410,8 +437,13 @@ class HeadEndGPIODriver:
                     asyncio.to_thread(self._backend.set_value, self._relay_pin, deenergized_val),
                     timeout=1.0,
                 )
+                self._relay_state = False
+                self._relay_state_known = True
             except Exception as e:
                 logger.error("Error during force_all_outputs_off: %s", e)
+                self._relay_state_known = False
+        else:
+            self._relay_state_known = False
 
     async def cleanup(self) -> None:
         """Releases GPIO handles and shuts off outputs."""
@@ -424,6 +456,7 @@ class HeadEndGPIODriver:
                 pass
             self._backend = None
         self._hardware_available = False
+        self._relay_state_known = False
 
 
 head_end_gpio = HeadEndGPIODriver()

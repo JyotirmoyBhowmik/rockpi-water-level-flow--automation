@@ -80,7 +80,9 @@ class StateManager:
                     "leak_sensor": None,
                 },
                 "interlock_cause": "unconfigured",
-                "contactor_relay": False,
+                "contactor_relay": None,
+                "contactor_relay_known": False,
+                "last_commanded_relay_state": None,
                 "contactor_feedback": None,
                 "healthy_debounce_count": 0,  # Consecutive healthy cycles
                 "wiring_fault_latched": False,
@@ -136,6 +138,11 @@ class StateManager:
         state["uptime_seconds"] = int(get_monotonic_now() - self._start_monotonic)
         state["system_clock_valid"] = is_system_clock_valid()
 
+        from app.hardware.gpio_driver import head_end_gpio
+        state["head_end"]["contactor_relay"] = head_end_gpio.relay_state
+        state["head_end"]["contactor_relay_known"] = head_end_gpio.relay_state_known
+        state["head_end"]["last_commanded_relay_state"] = head_end_gpio.last_commanded_relay_state
+
         if state["motor"]["state"] == "RUNNING" and self._state["motor"]["started_at_monotonic"]:
             run_sec = int(get_monotonic_now() - self._state["motor"]["started_at_monotonic"])
             state["motor"]["current_run_seconds"] = run_sec
@@ -176,7 +183,13 @@ class StateManager:
             he = self._state["head_end"]
             he["configured"] = hardware_available
             self._state["hardware_ready"] = hardware_available
-            he["contactor_feedback"] = contactor_feedback
+            
+            from app.hardware.gpio_driver import head_end_gpio
+            he["contactor_relay"] = head_end_gpio.relay_state
+            he["contactor_relay_known"] = head_end_gpio.relay_state_known
+            he["last_commanded_relay_state"] = head_end_gpio.last_commanded_relay_state
+            if contactor_feedback is not None:
+                he["contactor_feedback"] = contactor_feedback
 
             # If debounced dict passed, use debounced logical values
             if debounced:
@@ -432,7 +445,7 @@ class StateManager:
                 m["started_at_monotonic"] = None
                 # Asynchronously log run in runs table
                 asyncio.create_task(self.log_run("motor", started_iso, duration_s, reason or "stopped"))
-            elif new_state == "OFF":
+            elif new_state in ("OFF", "FAULT"):
                 m["last_stop_reason"] = reason
 
     async def set_motor_cooldown(self, until_epoch: float) -> None:

@@ -181,6 +181,7 @@ class SystemScheduler:
                     hardware_available=head_end_gpio.is_hardware_available,
                     raw=inputs.get("raw"),
                     debounced=inputs.get("debounced"),
+                    contactor_feedback=inputs.get("contactor_feedback"),
                 )
 
                 # 3. Check staleness

@@ -49,13 +49,18 @@ class MotorController:
                 return False, f"Start rejected: {reason}"
 
             # Contactor Pre-check: Welded Contact Guard (Part 2.8)
-            if system_config.head_end.contactor_feedback_pin is not None:
+            has_fb_pin = (
+                system_config.head_end.contactor_feedback_pin is not None
+                or getattr(head_end_gpio, "_feedback_pin", None) is not None
+            )
+            if has_fb_pin:
                 pre_fb = await head_end_gpio.read_contactor_feedback()
                 if pre_fb is True:
                     alarm_msg = "WELDED_CONTACT: Contactor auxiliary feedback detected CLOSED while relay is OFF!"
                     await state_manager.set_alarm("welded_contact", alarm_msg)
                     failsafe_engine.manual_motor_lockout = True
                     await state_manager.set_motor_manual_lock(True)
+                    await state_manager.set_motor_state("FAULT", reason="welded_contact")
                     logger.critical("SAFETY INTERLOCK: %s", alarm_msg)
                     return False, f"Start rejected: {alarm_msg}"
 
@@ -64,15 +69,32 @@ class MotorController:
             if not success:
                 return False, "Failed to drive contactor relay pin."
 
-            # Contactor Pull-in Check (Part 2.8: 1s timeout)
-            if system_config.head_end.contactor_feedback_pin is not None:
-                post_fb = await head_end_gpio.read_contactor_feedback()
-                if post_fb is not True:
+            # Contactor Pull-in Check: poll read_contactor_feedback() every 50ms up to pull_in_timeout_ms
+            has_fb_pin = (
+                system_config.head_end.contactor_feedback_pin is not None
+                or getattr(head_end_gpio, "_feedback_pin", None) is not None
+            )
+            if has_fb_pin:
+                pull_in_timeout_s = system_config.motor.pull_in_timeout_ms / 1000.0
+                deadline = asyncio.get_running_loop().time() + pull_in_timeout_s
+                pulled_in = False
+                while True:
+                    post_fb = await head_end_gpio.read_contactor_feedback()
+                    if post_fb is True:
+                        pulled_in = True
+                        break
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(min(0.05, remaining))
+
+                if not pulled_in:
                     await head_end_gpio.set_contactor_relay(False)
-                    alarm_msg = "CONTACTOR_MISMATCH: Contactor failed to close within 1s of relay energization."
+                    alarm_msg = f"CONTACTOR_MISMATCH: Contactor failed to close within {system_config.motor.pull_in_timeout_ms}ms of relay energization."
                     await state_manager.set_alarm("contactor_mismatch", alarm_msg)
                     failsafe_engine.manual_motor_lockout = True
                     await state_manager.set_motor_manual_lock(True)
+                    await state_manager.set_motor_state("FAULT", reason="contactor_mismatch")
                     logger.critical("SAFETY INTERLOCK: %s", alarm_msg)
                     return False, f"Start failed: {alarm_msg}"
 
@@ -96,7 +118,49 @@ class MotorController:
             state = state_manager.get_state()
             was_running = (state["motor"]["state"] == "RUNNING")
 
-            await head_end_gpio.set_contactor_relay(False)
+            success = await head_end_gpio.set_contactor_relay(False)
+            if not success:
+                await head_end_gpio.force_all_outputs_off()
+                alarm_msg = "RELAY_WRITE_FAILED: Failed to de-energize contactor relay output!"
+                await state_manager.set_alarm("relay_write_failed", alarm_msg)
+                failsafe_engine.manual_motor_lockout = True
+                await state_manager.set_motor_manual_lock(True)
+                await state_manager.set_motor_state("FAULT", reason="relay_write_failed")
+                await audio_controller.speak("Critical alert: Contactor relay write failed. Motor faulted.", priority=0)
+                await telegram_notifier.send_alert("RELAY_WRITE_FAILED", alarm_msg)
+                logger.critical("SAFETY INTERLOCK: %s", alarm_msg)
+                return False, f"Stop failed: {alarm_msg}"
+
+            # If feedback pin configured, poll for drop-out (default 1000 ms); if still closed -> WELDED_CONTACT alarm + lockout
+            has_fb_pin = (
+                system_config.head_end.contactor_feedback_pin is not None
+                or getattr(head_end_gpio, "_feedback_pin", None) is not None
+            )
+            if has_fb_pin:
+                drop_out_timeout_s = getattr(system_config.motor, "drop_out_timeout_ms", 1000) / 1000.0
+                deadline = asyncio.get_running_loop().time() + drop_out_timeout_s
+                dropped_out = False
+                while True:
+                    fb = await head_end_gpio.read_contactor_feedback()
+                    if fb is False:
+                        dropped_out = True
+                        break
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(min(0.05, remaining))
+
+                if not dropped_out:
+                    alarm_msg = "WELDED_CONTACT: Contactor auxiliary feedback remained CLOSED after de-energizing relay!"
+                    await state_manager.set_alarm("welded_contact", alarm_msg)
+                    failsafe_engine.manual_motor_lockout = True
+                    await state_manager.set_motor_manual_lock(True)
+                    await state_manager.set_motor_state("FAULT", reason="welded_contact")
+                    await audio_controller.speak("Critical emergency: Welded contactor contacts detected. Motor locked out.", priority=0)
+                    await telegram_notifier.send_alert("WELDED_CONTACT", alarm_msg)
+                    logger.critical("SAFETY INTERLOCK: %s", alarm_msg)
+                    return False, f"Stop failed: {alarm_msg}"
+
             await state_manager.set_motor_state("OFF", reason=reason)
             state_manager._state["motor"]["last_stop_monotonic"] = get_monotonic_now()
 

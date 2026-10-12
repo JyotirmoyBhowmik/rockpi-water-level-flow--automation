@@ -29,6 +29,7 @@ class FailsafeSafetyEngine:
         self.motor_cooldown_until: float = 0.0
         self.manual_motor_lockout = False
         self.leak_alarm_active = False
+        self._feedback_mismatch_start_mono: Optional[float] = None
         self.flow_faults: Dict[str, bool] = {f"zone_{i}": False for i in range(1, 5)}
         self._zone_run_start_mono: Dict[str, Optional[float]] = {f"zone_{i}": None for i in range(1, 5)}
         self._zone_pulses_start: Dict[str, int] = {f"zone_{i}": 0 for i in range(1, 5)}
@@ -124,12 +125,50 @@ class FailsafeSafetyEngine:
                     await telegram_notifier.send_alert("MOTOR_MAX_RUNTIME", alarm_msg)
                     logger.error("SAFETY INTERLOCK: %s", alarm_msg)
 
+        # 5. Periodic Contactor Commanded vs Feedback Consistency Check (> 2s mismatch -> stop + alarm)
+        fb = he.get("contactor_feedback")
+        commanded = head_end_gpio.last_commanded_relay_state
+        has_fb_pin = (
+            system_config.head_end.contactor_feedback_pin is not None
+            or getattr(head_end_gpio, "_feedback_pin", None) is not None
+        )
+        if (
+            head_end_gpio.is_hardware_available
+            and has_fb_pin
+            and fb is not None
+            and commanded is not None
+        ):
+            if commanded != fb:
+                if self._feedback_mismatch_start_mono is None:
+                    self._feedback_mismatch_start_mono = mono_now
+                elif (mono_now - self._feedback_mismatch_start_mono) > 2.0:
+                    if fb is True and not commanded:
+                        alarm_key = "welded_contact"
+                        alarm_msg = "CONTACTOR_MISMATCH: Contactor feedback closed while commanded OFF (>2s). Welded contact or manual override detected."
+                    else:
+                        alarm_key = "contactor_mismatch"
+                        alarm_msg = "CONTACTOR_MISMATCH: Contactor feedback open while commanded ON (>2s). Drop-out or coil trip detected."
+
+                    await head_end_gpio.force_all_outputs_off()
+                    await state_manager.set_alarm(alarm_key, alarm_msg)
+                    self.manual_motor_lockout = True
+                    await state_manager.set_motor_manual_lock(True)
+                    await state_manager.set_motor_state("FAULT", reason=alarm_key)
+                    await audio_controller.speak("Emergency: Contactor state mismatch detected. Motor locked out.", priority=0)
+                    await telegram_notifier.send_alert("CONTACTOR_MISMATCH", alarm_msg)
+                    logger.critical("SAFETY INTERLOCK: %s", alarm_msg)
+            else:
+                self._feedback_mismatch_start_mono = None
+        else:
+            self._feedback_mismatch_start_mono = None
+
         return {
             "wiring_fault": self.wiring_fault_active,
             "leak_active": self.leak_alarm_active,
             "motor_timeout_tripped": self.motor_timeout_tripped,
             "motor_cooldown_until": self.motor_cooldown_until,
             "manual_motor_lockout": self.manual_motor_lockout,
+            "feedback_mismatch": self._feedback_mismatch_start_mono is not None,
         }
 
     # -------------------------------------------------------------------------
@@ -185,6 +224,9 @@ class FailsafeSafetyEngine:
         if he.get("healthy_debounce_count", 0) < 3:
             return False, f"Hardware interlock chain not yet stabilized (healthy count {he.get('healthy_debounce_count', 0)}/3)."
 
+        if motor.get("state") == "FAULT":
+            return False, "Motor is in FAULT state. Manual reset required via UI/API."
+
         if self.manual_motor_lockout:
             return False, "Motor is locked due to previous max-runtime trip. Manual reset required via UI/API."
 
@@ -221,6 +263,7 @@ class FailsafeSafetyEngine:
         self.manual_motor_lockout = False
         self.motor_cooldown_until = 0.0
         self.wiring_fault_active = False
+        self._feedback_mismatch_start_mono = None
 
         state = state_manager._state["motor"]
         state["state"] = "OFF"
@@ -229,7 +272,7 @@ class FailsafeSafetyEngine:
 
         # Clear in-memory alarms and reset latched wiring fault
         state_manager.reset_wiring_fault()
-        for k in ["motor_timeout", "contactor_mismatch", "head_end_input_lost"]:
+        for k in ["motor_timeout", "contactor_mismatch", "welded_contact", "relay_write_failed", "head_end_input_lost"]:
             state_manager._state["alarms"].pop(k, None)
 
         logger.info("Motor safety lockouts and cooldown cleared by operator. State reset to OFF.")

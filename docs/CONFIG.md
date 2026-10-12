@@ -57,6 +57,9 @@ motor:
   auto_mode: false                 # Enable automated replenishment when tank is low
   max_runtime_s: 900               # 15 minutes max continuous runtime limit
   cooldown_s: 1800                 # 30 minutes mandatory cooldown after max-runtime trip
+  min_off_time_s: 120              # 120s mandatory rest between pump stop and next start
+  pull_in_timeout_ms: 1000         # Max milliseconds to wait for contactor pull-in
+  drop_out_timeout_ms: 1000        # Max milliseconds to wait for contactor drop-out
 
 # Wireless Garden Drip Zones (1-4)
 zones:

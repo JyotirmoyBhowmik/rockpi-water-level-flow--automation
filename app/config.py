@@ -124,6 +124,8 @@ class MotorConfig(BaseModel):
     max_runtime_s: int = Field(default=900, ge=30, le=3600, description="Maximum continuous motor run limit (15 min)")
     cooldown_s: int = Field(default=1800, ge=60, le=7200, description="Mandatory cooldown after max-runtime trip (30 min)")
     min_off_time_s: int = Field(default=120, ge=10, le=1800, description="Minimum OFF time between motor stop and next start")
+    pull_in_timeout_ms: int = Field(default=1000, ge=50, le=5000, description="Max milliseconds to wait for contactor pull-in")
+    drop_out_timeout_ms: int = Field(default=1000, ge=50, le=5000, description="Max milliseconds to wait for contactor drop-out")
 
 
 class ZoneCalibration(BaseModel):
