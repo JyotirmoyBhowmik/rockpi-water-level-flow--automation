@@ -140,6 +140,19 @@ class StateManager:
                 "last_run_energy_kwh": 0.0,
                 "last_update_ts": None,
             },
+            "level_sensor": {
+                "available": False,
+                "sensor_type": "none",
+                "level_pct": None,
+                "water_depth_cm": None,
+                "volume_litres": None,
+                "tank_capacity_litres": None,
+                "fill_rate_lpm": None,
+                "fill_eta_minutes": None,
+                "daily_consumption_litres": 0.0,
+                "predictive_stop_pct": None,
+                "last_update_ts": None,
+            },
             "alarms": {},
         }
 
@@ -160,6 +173,9 @@ class StateManager:
 
         from app.hardware.power_meter import power_meter
         state["power_meter"] = power_meter.get_status_dict()
+
+        from app.hardware.level_sensor import level_sensor
+        state["level_sensor"] = level_sensor.get_status_dict()
 
         if state["motor"]["state"] == "RUNNING" and self._state["motor"]["started_at_monotonic"]:
             run_sec = int(get_monotonic_now() - self._state["motor"]["started_at_monotonic"])
@@ -487,6 +503,12 @@ class StateManager:
             self._state["power_meter"].update(data)
             self._state["power_meter"]["last_update_ts"] = time.time()
 
+    async def update_level_sensor(self, data: Dict[str, Any]) -> None:
+        """Updates live tank level sensor telemetry."""
+        async with self._lock:
+            self._state["level_sensor"].update(data)
+            self._state["level_sensor"]["last_update_ts"] = time.time()
+
     async def set_zone_cooldown(self, zone_key: str, until_epoch: float) -> None:
         async with self._lock:
             if zone_key in self._state["garden"]["zones"]:
@@ -649,11 +671,56 @@ class StateManager:
                 """
             )
 
+            # 8. Household Water Consumption Table
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS water_consumption (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    hour_bin TEXT NOT NULL,
+                    litres_consumed REAL NOT NULL,
+                    level_pct REAL NOT NULL
+                );
+                """
+            )
+
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(timestamp);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(timestamp);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_target ON runs(target);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_consumption_ts ON water_consumption(timestamp);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_consumption_hour ON water_consumption(hour_bin);")
             conn.commit()
             logger.info("Database initialized with empty tables at %s", self.db_path)
+
+    async def get_consumption_history(self, hours: int = 24) -> Dict[str, Any]:
+        """Returns hourly consumption breakdown and total for UI charting."""
+        def _query() -> Dict[str, Any]:
+            with self._get_connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT hour_bin, SUM(litres_consumed) as total_litres, AVG(level_pct) as avg_level
+                    FROM water_consumption
+                    GROUP BY hour_bin
+                    ORDER BY hour_bin DESC
+                    LIMIT ?;
+                    """,
+                    (hours,),
+                ).fetchall()
+                data = [
+                    {
+                        "hour": row["hour_bin"],
+                        "litres": round(float(row["total_litres"]), 1),
+                        "avg_level_pct": round(float(row["avg_level"]), 1) if row["avg_level"] is not None else None,
+                    }
+                    for row in reversed(rows)
+                ]
+                total = sum(item["litres"] for item in data)
+                return {
+                    "hourly": data,
+                    "daily_total_litres": round(total, 1),
+                }
+
+        return await asyncio.to_thread(_query)
 
     async def save_lockout(self, key: str, value: Any) -> None:
         """Persists a lockout flag or cooldown to SQLite."""

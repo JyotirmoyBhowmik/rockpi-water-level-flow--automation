@@ -112,6 +112,34 @@ power_meter:
   learning_runs_required: 5        # Number of healthy runs (>=30s) required to establish baseline
   baseline_current_a: null         # Optional manual baseline current in Amperes (null = auto-learn)
 
+# Optional Continuous Tank Level Sensing (JSN-SR04T Ultrasonic or 4-20mA Pressure Transducer)
+# NOTE: Electromechanical float switches remain the authoritative hardware safety interlock.
+level_sensor:
+  enabled: false                   # Enable continuous tank level monitoring
+  sensor_type: "none"              # "none", "jsn_sr04t", or "pressure_4_20ma"
+  echo_pin: null                   # JSN-SR04T Echo input GPIO pin
+  trigger_pin: null                # JSN-SR04T Trigger output GPIO pin
+  serial_port: null                # UART device path if using JSN-SR04T serial mode
+  i2c_bus: 7                       # I2C bus number for ADS1115 level transducer (default 7 on ROCK Pi S)
+  i2c_address: 0x48                # ADS1115 I2C address (default 0x48)
+  adc_channel: 1                   # ADS1115 analog input channel for level transducer (0-3)
+  shunt_resistance_ohms: 250.0     # Precision shunt resistor value in Ohms (default 250.0)
+  sensor_range_cm: 200.0           # Full-scale depth range of 4-20mA transducer in cm
+  tank_shape: "cylinder"           # "cylinder" or "rectangular"
+  tank_height_cm: 150.0            # Total internal water depth/height of tank in cm
+  tank_diameter_cm: 100.0          # Diameter in cm for cylindrical tank
+  tank_length_cm: null             # Internal length in cm for rectangular tank
+  tank_width_cm: null              # Internal width in cm for rectangular tank
+  sensor_offset_cm: 20.0           # Ultrasonic sensor face offset above 100% full water mark
+  predictive_stop_enabled: true    # Stop pump smoothly before Full float trips
+  predictive_stop_pct: 95.0        # Water level % to trigger predictive motor stop
+  slow_fill_min_run_s: 60.0        # Seconds motor must run before evaluating slow fill alarm
+  min_fill_rate_lpm: 5.0           # Minimum expected filling rate in L/min while pump runs
+  night_leak_detection_enabled: true # Enable leak detection during night zero-usage window
+  night_leak_window_start: 1       # Hour (0-23) when night window begins (01:00)
+  night_leak_window_end: 4         # Hour (0-23) when night window ends (04:00)
+  night_leak_max_drop_litres: 15.0 # Max allowable level drop in Litres during night window
+
 # Wireless Garden Drip Zones (1-4)
 zones:
   zone_1:
@@ -271,6 +299,37 @@ Configures optional AC power, voltage, and current monitoring via PZEM-004T v3 (
 | `learning_runs_required` | `int` | `5` | >= 1, <= 20 | Number of healthy runs required to establish baseline current |
 | `baseline_current_a` | `Optional[float]` | `null` | >= 0.1, <= 100.0 | Manually configured or learned baseline current in Amperes |
 
+### LevelSensorConfig (`level_sensor`)
+
+Configures optional continuous overhead tank water level monitoring via JSN-SR04T ultrasonic distance sensor or 4-20mA pressure transducer via ADS1115. Computes water depth, level percentage, volume in Litres, filling rate (L/min), ETA, predictive stops, daily consumption, and night leak alarms.
+
+| Field | Type | Default | Constraints | Description |
+|---|---|---|---|---|
+| `enabled` | `bool` | `false` | - | Enable continuous overhead tank water level monitoring |
+| `sensor_type` | `Literal[none, jsn_sr04t, pressure_4_20ma]` | `none` | - | Level sensor interface: jsn_sr04t or pressure_4_20ma |
+| `echo_pin` | `Optional[int]` | `null` | - | Echo input GPIO pin for JSN-SR04T (via PC817 or voltage divider) |
+| `trigger_pin` | `Optional[int]` | `null` | - | Trigger output GPIO pin for JSN-SR04T |
+| `serial_port` | `Optional[str]` | `null` | - | UART device path if using JSN-SR04T serial mode (e.g. /dev/ttyS2) |
+| `i2c_bus` | `int` | `7` | - | I2C bus number for ADS1115 level transducer (default 7 on Rock Pi S) |
+| `i2c_address` | `int` | `72` | - | I2C address for ADS1115 (default 0x48) |
+| `adc_channel` | `int` | `1` | >= 0, <= 3 | ADS1115 analog input channel for level transducer (0-3) |
+| `shunt_resistance_ohms` | `float` | `250.0` | >= 10.0, <= 1000.0 | Precision shunt resistor value in Ohms (default 250.0) |
+| `sensor_range_cm` | `float` | `200.0` | >= 10.0, <= 2000.0 | Full-scale depth range of 4-20 mA transducer in cm (at 20mA) |
+| `tank_shape` | `Literal[cylinder, rectangular]` | `cylinder` | - | Tank geometry: cylinder (vertical cylinder) or rectangular |
+| `tank_height_cm` | `float` | `150.0` | >= 10.0, <= 2000.0 | Total internal water depth/height of tank in cm |
+| `tank_diameter_cm` | `Optional[float]` | `100.0` | >= 10.0, <= 2000.0 | Diameter in cm if cylindrical tank |
+| `tank_length_cm` | `Optional[float]` | `null` | >= 10.0, <= 2000.0 | Internal length in cm if rectangular tank |
+| `tank_width_cm` | `Optional[float]` | `null` | >= 10.0, <= 2000.0 | Internal width in cm if rectangular tank |
+| `sensor_offset_cm` | `float` | `20.0` | >= 0.0, <= 200.0 | Mounting distance between ultrasonic sensor face and 100% water mark (blind zone compensation) |
+| `predictive_stop_enabled` | `bool` | `true` | - | Stop motor smoothly before Full float trips |
+| `predictive_stop_pct` | `float` | `95.0` | >= 50.0, <= 99.0 | Water level % to trigger predictive motor stop |
+| `slow_fill_min_run_s` | `float` | `60.0` | >= 10.0, <= 600.0 | Seconds motor must run before evaluating slow fill alarm |
+| `min_fill_rate_lpm` | `float` | `5.0` | >= 0.1, <= 500.0 | Minimum expected filling rate in L/min while motor is running |
+| `night_leak_detection_enabled` | `bool` | `true` | - | Enable leak detection during night no-usage window |
+| `night_leak_window_start` | `int` | `1` | >= 0, <= 23 | Hour (0-23) when night zero-usage window begins (e.g. 1 = 01:00) |
+| `night_leak_window_end` | `int` | `4` | >= 0, <= 23 | Hour (0-23) when night zero-usage window ends (e.g. 4 = 04:00) |
+| `night_leak_max_drop_litres` | `float` | `15.0` | >= 1.0, <= 500.0 | Max allowable level drop in Litres during night window before raising leak alarm |
+
 ### ZoneConfig (`zones.<zone_id>`)
 
 Per-zone irrigation settings: moisture threshold, pulse limits, cooldown periods, and flow verification.
@@ -365,3 +424,4 @@ Commissioning checklist tracking input checks, relay click tests, gateway pairin
 5. **Telemetry Staleness Locking:** When sensor telemetry exceeds its configured threshold, the controller disallows dependent automatic actuators.
 6. **Exclusive Watchdog Ownership:** The application exclusively manages `/dev/watchdog`. Do not enable `RuntimeWatchdogSec` in systemd system.conf.
 7. **Supplementary Motor Current Protection:** Software current monitoring detects dry-run (loss of prime) and locked rotor. It provides supplementary protection and **NEVER replaces the physical bimetallic/electronic thermal overload relay or MPCB** required by electrical codes.
+8. **Authoritative Hardware Floats:** Continuous level sensing provides predictive control, telemetry, and automated leak detection. The electromechanical float switches (Full float NC, Sump float NO) remain the authoritative, non-bypassable hardware and software safety interlock.

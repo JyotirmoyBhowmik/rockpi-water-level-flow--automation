@@ -215,6 +215,26 @@ class MotorController:
         if not state["hardware_ready"] or he["is_stale"]:
             return
 
+        # 1. Predictive Stop Check before Full float while motor is RUNNING
+        if motor["state"] == "RUNNING":
+            from app.hardware.level_sensor import level_sensor
+            if level_sensor.should_predictive_stop():
+                pct = level_sensor._last_reading.level_pct if level_sensor._last_reading else 0.0
+                target_pct = system_config.level_sensor.predictive_stop_pct
+                logger.info(
+                    "Predictive stop triggered: tank reached %.1f%% (>= %.1f%%). De-energizing contactor before Full float.",
+                    pct,
+                    target_pct,
+                )
+                await self.stop_motor(reason="predictive_level_full")
+                await audio_controller.speak("Overhead tank reached target level. Main pump stopped.", priority=1)
+                await telegram_notifier.send_alert(
+                    "PREDICTIVE_STOP",
+                    f"Overhead tank reached predictive target level ({pct:.1f}% >= {target_pct:.1f}%). Motor stopped smoothly.",
+                )
+                return
+
+        # 2. Auto-Start when low water float trips while motor is OFF
         if motor["state"] == "OFF" and he.get("tank_low_float") is True:
             # Low water condition detected
             allowed, reason = failsafe_engine.can_start_motor(is_manual=False)

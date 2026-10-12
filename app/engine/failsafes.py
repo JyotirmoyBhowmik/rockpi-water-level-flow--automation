@@ -3,6 +3,7 @@ Non-Bypassable Hardcoded Failsafes and Interlock Logic for Radxa ROCK Pi S Contr
 Enforces hardware interlock chain cause logic, motor protection, and plant irrigation guards.
 """
 
+from datetime import datetime
 import logging
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -171,6 +172,39 @@ class FailsafeSafetyEngine:
                 elapsed_s = (mono_now - started_mono) if started_mono else 0.0
                 await self.evaluate_motor_power_safety(reading, elapsed_s)
 
+        # 7. Slow Fill Rate Alarm (Delivery pipe leak, check-valve failure, pump airlock)
+        if motor["state"] == "RUNNING":
+            from app.hardware.level_sensor import level_sensor
+            if level_sensor.is_available():
+                started_mono = state_manager._state["motor"]["started_at_monotonic"]
+                elapsed_s = (mono_now - started_mono) if started_mono else 0.0
+                is_slow, rate_lpm, slow_msg = level_sensor.check_slow_fill(elapsed_s)
+                if is_slow and slow_msg:
+                    if "slow_fill_rate" not in state["alarms"]:
+                        await state_manager.set_alarm("slow_fill_rate", slow_msg)
+                        await audio_controller.speak("Warning: Tank filling too slowly. Check supply pipe and pump prime.", priority=1)
+                        await telegram_notifier.send_alert("SLOW_FILL_RATE", slow_msg)
+                        logger.warning("SAFETY ALERT: %s", slow_msg)
+
+        # 8. Night-Time Leak Detection (Unintended tank water drop during zero-usage window)
+        from app.hardware.level_sensor import level_sensor
+        if level_sensor.is_available():
+            current_hour = datetime.now().hour
+            garden_running = any(
+                z.get("is_watering", False) for z in state["garden"]["zones"].values()
+            )
+            is_night_leak, drop_l, leak_msg = level_sensor.evaluate_night_leak(
+                current_hour=current_hour,
+                motor_running=(motor["state"] == "RUNNING"),
+                garden_running=garden_running,
+            )
+            if is_night_leak and leak_msg:
+                if "night_leak_detected" not in state["alarms"]:
+                    await state_manager.set_alarm("night_leak_detected", leak_msg)
+                    await audio_controller.speak("Warning: Unintended water drop detected during night window.", priority=1)
+                    await telegram_notifier.send_alert("NIGHT_LEAK_DETECTED", leak_msg)
+                    logger.warning("SAFETY ALERT: %s", leak_msg)
+
         return {
             "wiring_fault": self.wiring_fault_active,
             "leak_active": self.leak_alarm_active,
@@ -248,6 +282,13 @@ class FailsafeSafetyEngine:
         if self.wiring_fault_active or he.get("interlock_cause") == "wiring_fault":
             return False, "Wiring fault detected in hardware interlock chain. Motor locked."
 
+        if motor.get("state") == "FAULT":
+            return False, "Motor is in FAULT state. Manual reset required via UI/API."
+
+        if self.manual_motor_lockout or motor.get("manual_locked"):
+            return False, "Motor is locked due to previous max-runtime trip. Manual reset required via UI/API."
+
+
         cause = he.get("interlock_cause")
         if cause == "tank_full":
             return False, "Overhead tank is already full (Full float open)."
@@ -260,11 +301,6 @@ class FailsafeSafetyEngine:
         if he.get("healthy_debounce_count", 0) < 3:
             return False, f"Hardware interlock chain not yet stabilized (healthy count {he.get('healthy_debounce_count', 0)}/3)."
 
-        if motor.get("state") == "FAULT":
-            return False, "Motor is in FAULT state. Manual reset required via UI/API."
-
-        if self.manual_motor_lockout:
-            return False, "Motor is locked due to previous max-runtime trip. Manual reset required via UI/API."
 
         if self.motor_cooldown_until > now:
             remaining_m = int((self.motor_cooldown_until - now) / 60)
@@ -325,6 +361,8 @@ class FailsafeSafetyEngine:
             "overload",
             "motor_overload_current",
             "voltage_out_of_bounds",
+            "slow_fill_rate",
+            "night_leak_detected",
         ]:
             state_manager._state["alarms"].pop(k, None)
 

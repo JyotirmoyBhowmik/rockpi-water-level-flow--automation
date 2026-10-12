@@ -175,6 +175,57 @@ class PowerMeterConfig(BaseModel):
     baseline_current_a: Optional[float] = Field(default=None, ge=0.1, le=100.0, description="Manually configured or learned baseline current in Amperes")
 
 
+class LevelSensorConfig(BaseModel):
+    """
+    Configuration for optional continuous overhead tank water level monitoring via:
+      1. JSN-SR04T waterproof ultrasonic distance sensor (GPIO trigger/echo or UART serial)
+      2. 4-20 mA submersible hydrostatic pressure transducer via ADS1115 + 250 ohm shunt
+    NOTE: Electromechanical float switches remain the authoritative hardware interlock.
+    """
+    enabled: bool = Field(default=False, description="Enable continuous overhead tank water level monitoring")
+    sensor_type: Literal["none", "jsn_sr04t", "pressure_4_20ma"] = Field(
+        default="none", description="Level sensor interface: jsn_sr04t or pressure_4_20ma"
+    )
+    # JSN-SR04T parameters
+    echo_pin: Optional[int] = Field(default=None, description="Echo input GPIO pin for JSN-SR04T (via PC817 or voltage divider)")
+    trigger_pin: Optional[int] = Field(default=None, description="Trigger output GPIO pin for JSN-SR04T")
+    serial_port: Optional[str] = Field(default=None, description="UART device path if using JSN-SR04T serial mode (e.g. /dev/ttyS2)")
+
+    # 4-20 mA pressure transducer via ADS1115 parameters
+    i2c_bus: int = Field(default=7, description="I2C bus number for ADS1115 level transducer (default 7 on Rock Pi S)")
+    i2c_address: int = Field(default=0x48, description="I2C address for ADS1115 (default 0x48)")
+    adc_channel: int = Field(default=1, ge=0, le=3, description="ADS1115 analog input channel for level transducer (0-3)")
+    shunt_resistance_ohms: float = Field(default=250.0, ge=10.0, le=1000.0, description="Precision shunt resistor value in Ohms (default 250.0)")
+    sensor_range_cm: float = Field(default=200.0, ge=10.0, le=2000.0, description="Full-scale depth range of 4-20 mA transducer in cm (at 20mA)")
+
+    # Tank Geometry & Dimensions
+    tank_shape: Literal["cylinder", "rectangular"] = Field(
+        default="cylinder", description="Tank geometry: cylinder (vertical cylinder) or rectangular"
+    )
+    tank_height_cm: float = Field(default=150.0, ge=10.0, le=2000.0, description="Total internal water depth/height of tank in cm")
+    tank_diameter_cm: Optional[float] = Field(default=100.0, ge=10.0, le=2000.0, description="Diameter in cm if cylindrical tank")
+    tank_length_cm: Optional[float] = Field(default=None, ge=10.0, le=2000.0, description="Internal length in cm if rectangular tank")
+    tank_width_cm: Optional[float] = Field(default=None, ge=10.0, le=2000.0, description="Internal width in cm if rectangular tank")
+    sensor_offset_cm: float = Field(
+        default=20.0, ge=0.0, le=200.0,
+        description="Mounting distance between ultrasonic sensor face and 100% water mark (blind zone compensation)"
+    )
+
+    # Predictive stop & filling rate safety
+    predictive_stop_enabled: bool = Field(default=True, description="Stop motor smoothly before Full float trips")
+    predictive_stop_pct: float = Field(default=95.0, ge=50.0, le=99.0, description="Water level % to trigger predictive motor stop")
+    slow_fill_min_run_s: float = Field(default=60.0, ge=10.0, le=600.0, description="Seconds motor must run before evaluating slow fill alarm")
+    min_fill_rate_lpm: float = Field(default=5.0, ge=0.1, le=500.0, description="Minimum expected filling rate in L/min while motor is running")
+
+    # Night-time leak detection
+    night_leak_detection_enabled: bool = Field(default=True, description="Enable leak detection during night no-usage window")
+    night_leak_window_start: int = Field(default=1, ge=0, le=23, description="Hour (0-23) when night zero-usage window begins (e.g. 1 = 01:00)")
+    night_leak_window_end: int = Field(default=4, ge=0, le=23, description="Hour (0-23) when night zero-usage window ends (e.g. 4 = 04:00)")
+    night_leak_max_drop_litres: float = Field(
+        default=15.0, ge=1.0, le=500.0, description="Max allowable level drop in Litres during night window before raising leak alarm"
+    )
+
+
 class ZoneCalibration(BaseModel):
     dry_v: Optional[float] = Field(default=None, description="Calibration voltage in air (dry probe)")
     wet_v: Optional[float] = Field(default=None, description="Calibration voltage submerged in water")
@@ -237,6 +288,7 @@ class SystemConfig(BaseModel):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     motor: MotorConfig = Field(default_factory=MotorConfig)
     power_meter: PowerMeterConfig = Field(default_factory=PowerMeterConfig)
+    level_sensor: LevelSensorConfig = Field(default_factory=LevelSensorConfig)
     zones: Dict[str, ZoneConfig] = Field(default_factory=lambda: {
         f"zone_{i}": ZoneConfig(name=f"Zone {i}", has_flow_meter=(i == 1)) for i in range(1, 5)
     })

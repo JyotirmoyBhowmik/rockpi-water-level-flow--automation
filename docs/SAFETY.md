@@ -74,6 +74,11 @@ Two taps feed optocoupler inputs `IN3` (`interlock_mid`) and `IN2` (`interlock_o
    - **Inrush Blanking Window:** Current evaluations are blanked during the first `inrush_blanking_s` (default 3.0s) to prevent false trips during induction motor starting inrush.
    - **Automated Baseline Learning:** Automatically learns healthy steady-state baseline current over the first 5 healthy completed runs (>=30s, normal stop), persisted to SQLite.
    - **CRITICAL SAFETY NOTICE:** Software current monitoring provides supplementary dry-run and locked-rotor protection. It **NEVER replaces the physical bimetallic/electronic thermal overload relay or MPCB** required by electrical wiring codes.
+7. **Continuous Tank Level Sensing & Authoritative Float Hierarchy:**
+   - **Predictive Motor Stop:** Software triggers a smooth stop when tank reaches `predictive_stop_pct` (default 95%), saving mechanical wear and stopping before the hardware float trips.
+   - **Slow Fill Rate Alarm:** If the pump runs for > `slow_fill_min_run_s` (default 60s) and fill rate remains below `min_fill_rate_lpm` (default 5.0 L/min), a `SLOW_FILL_RATE` alarm is sounded and dispatched via Telegram to alert on delivery pipe leaks, failed check valves, or pump loss-of-prime.
+   - **Night-Time Leak Detection:** If tank volume drops by > `night_leak_max_drop_litres` (default 15L) during the zero-usage night window (01:00 to 04:00) with no active irrigation, a `NIGHT_LEAK_DETECTED` alarm warns the homeowner of leaking toilets, dripping taps, or burst distribution lines.
+   - **AUTHORITATIVE HARDWARE FLOATS:** Continuous level sensing is purely supplementary. The series electromechanical float switches (Full float NC, Sump float NO) remain the non-bypassable physical and software interlock layer. If the level sensor fails or disconnects, the physical Full float reliably interrupts the circuit at 100% capacity.
 
 ---
 

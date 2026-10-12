@@ -36,6 +36,8 @@ async def setup_test_environment(tmp_path: Path):
     state_manager._state["motor"]["cooldown_until_ts"] = 0.0
     state_manager._state["motor"]["manual_locked"] = False
     state_manager._state["head_end"]["healthy_debounce_count"] = 3
+    state_manager._state["head_end"]["interlock_cause"] = "healthy"
+    state_manager._state["alarms"] = {}
 
     failsafe_engine.wiring_fault_active = False
     failsafe_engine.motor_timeout_tripped = False

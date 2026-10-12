@@ -114,7 +114,8 @@ The system reliably orchestrates:
 | **RTC** | DS3231 I2C RTC | 1 | Precision TCXO RTC Module + CR2032 Battery | $2.50 | Monotonic time during internet loss |
 | **Audio** | USB Audio DAC | 1 | CM108 USB Audio Adapter + Powered Speaker | $4.50 | Synthesized voice alerts (espeak-ng) |
 | **Power Meter (Optional)** | PZEM-004T v3 or SCT-013 CT | 1 | PZEM-004T v3 Modbus RTU (USB-TTL) or SCT-013-030 CT clamp. Provides dry-run loss-of-prime shutoff, overload trip, voltage window checking, kWh logging, and 5-run baseline learning. Does NOT replace thermal overload relay. | $8.00 | Supplementary motor current & power protection |
-| **Total** | - | - | - | **~$98.00** | Complete Industrial Automation |
+| **Level Sensor (Optional)** | JSN-SR04T or 4-20mA Transducer | 1 | Waterproof ultrasonic distance sensor (UART/GPIO) or 4-20mA submersible pressure transducer via ADS1115 + 250 ohm shunt. Level %, litres, fill rate, ETA, predictive stop, consumption chart, night leak detection. Floats remain authoritative. | $9.50 | Continuous tank level sensing & leak detection |
+| **Total** | - | - | - | **~$107.50** | Complete Industrial Automation |
 
 ---
 

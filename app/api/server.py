@@ -91,6 +91,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await power_meter.init()
     except Exception as exc:
         logger.warning("Power meter initialization error: %s", exc)
+    from app.hardware.level_sensor import level_sensor
+    try:
+        await level_sensor.init()
+    except Exception as exc:
+        logger.warning("Level sensor initialization error: %s", exc)
 
     # 5. Load user rules and start scheduler
     await rules_evaluator.load_rules_from_db()

@@ -169,6 +169,26 @@ Rock Pi S GND ----------------------------------+
 
 ---
 
+### 2.8 Continuous Overhead Tank Level Sensing (JSN-SR04T & 4-20mA Transducer)
+> [!NOTE]
+> **AUTHORITATIVE SAFETY FLOATS:** Continuous level sensing provides percentage/litres telemetry, filling rate estimation, predictive motor stops, and night leak alarms. The series electromechanical float switches (Full float NC, Sump float NO) remain the authoritative, non-bypassable hardware interlock layer.
+
+#### Option A: JSN-SR04T Waterproof Ultrasonic Distance Sensor
+- **Mounting:** Mounted vertically pointing down from the top inspection port of the overhead water tank.
+- **Sensor Offset:** A minimum offset distance (default 20cm) accommodates the ultrasonic transducer blind zone (20-25cm).
+- **Interface Modes:**
+  - **Serial Mode (Recommended):** Transmits distance at 9600 baud (`0xFF, H_DATA, L_DATA, CHECKSUM`) to SBC UART.
+  - **GPIO Pulse Mode:** Trigger pin connected to SBC GPIO; Echo pin connected through a 5V-to-3.3V voltage divider (1k / 2k resistor) or PC817 optoisolator channel.
+
+#### Option B: 4-20 mA Submersible Hydrostatic Pressure Transducer
+- **Mounting:** Submersible stainless steel probe lowered to the bottom of the overhead tank.
+- **Circuit:** 2-wire 12V/24V loop connected through a precision 250 ohm ($\pm 0.1\%$) shunt resistor to ADS1115 analog input (Channel A1) on I2C bus 7 (`/dev/i2c-7`, address `0x48`).
+- **Transfer Function:**
+  - $4\text{ mA} \to 1.0\text{V}$ (zero water head / empty)
+  - $20\text{ mA} \to 5.0\text{V}$ (full depth range, e.g. 200cm)
+
+---
+
 ## 3. Wireless Garden Node Wiring (ESP32-C3 Super Mini)
 
 ### 3.1 ESP32-C3 Super Mini Pinout Reference

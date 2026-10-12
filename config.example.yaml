@@ -85,6 +85,34 @@ power_meter:
   learning_runs_required: 5        # Number of healthy runs (>=30s) required to establish baseline
   baseline_current_a: null         # Optional manual baseline current in Amperes (null = auto-learn)
 
+# Optional Continuous Tank Level Sensing (JSN-SR04T Ultrasonic or 4-20mA Pressure Transducer)
+# NOTE: Electromechanical float switches remain the authoritative hardware safety interlock.
+level_sensor:
+  enabled: false                   # Enable continuous tank level monitoring
+  sensor_type: "none"              # "none", "jsn_sr04t", or "pressure_4_20ma"
+  echo_pin: null                   # JSN-SR04T Echo input GPIO pin
+  trigger_pin: null                # JSN-SR04T Trigger output GPIO pin
+  serial_port: null                # UART device path if using JSN-SR04T serial mode
+  i2c_bus: 7                       # I2C bus number for ADS1115 level transducer (default 7 on ROCK Pi S)
+  i2c_address: 0x48                # ADS1115 I2C address (default 0x48)
+  adc_channel: 1                   # ADS1115 analog input channel for level transducer (0-3)
+  shunt_resistance_ohms: 250.0     # Precision shunt resistor value in Ohms (default 250.0)
+  sensor_range_cm: 200.0           # Full-scale depth range of 4-20mA transducer in cm
+  tank_shape: "cylinder"           # "cylinder" or "rectangular"
+  tank_height_cm: 150.0            # Total internal water depth/height of tank in cm
+  tank_diameter_cm: 100.0          # Diameter in cm for cylindrical tank
+  tank_length_cm: null             # Internal length in cm for rectangular tank
+  tank_width_cm: null              # Internal width in cm for rectangular tank
+  sensor_offset_cm: 20.0           # Ultrasonic sensor face offset above 100% full water mark
+  predictive_stop_enabled: true    # Stop pump smoothly before Full float trips
+  predictive_stop_pct: 95.0        # Water level % to trigger predictive motor stop
+  slow_fill_min_run_s: 60.0        # Seconds motor must run before evaluating slow fill alarm
+  min_fill_rate_lpm: 5.0           # Minimum expected filling rate in L/min while pump runs
+  night_leak_detection_enabled: true # Enable leak detection during night zero-usage window
+  night_leak_window_start: 1       # Hour (0-23) when night window begins (01:00)
+  night_leak_window_end: 4         # Hour (0-23) when night window ends (04:00)
+  night_leak_max_drop_litres: 15.0 # Max allowable level drop in Litres during night window
+
 # Plant Irrigation Zones (ESP32-C3 Wireless Node)
 zones:
   zone_1:

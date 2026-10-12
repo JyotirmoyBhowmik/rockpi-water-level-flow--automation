@@ -45,6 +45,21 @@ async def get_live_telemetry() -> Dict[str, Any]:
     return state_manager.get_state()
 
 
+@router.get("/level/consumption")
+async def get_level_consumption(
+    hours: int = Query(default=24, ge=1, le=168, description="Number of past hours to retrieve"),
+) -> Dict[str, Any]:
+    """
+    Returns household water consumption history (hourly breakdown and daily total)
+    derived from continuous tank level monitoring for UI charting.
+    """
+    history = await state_manager.get_consumption_history(hours=hours)
+    return {
+        "status": "success",
+        "data": history,
+    }
+
+
 @router.get("/telemetry/stream")
 async def sse_telemetry_stream(
     request: Request,

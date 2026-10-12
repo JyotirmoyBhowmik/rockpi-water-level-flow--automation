@@ -190,6 +190,12 @@ class SystemScheduler:
                 if power_reading is not None:
                     await state_manager.update_power_meter(power_reading.to_dict())
 
+                # 2c. Read continuous level sensor telemetry if enabled
+                from app.hardware.level_sensor import level_sensor
+                level_reading = await level_sensor.read_telemetry()
+                if level_reading is not None:
+                    await state_manager.update_level_sensor(level_reading.to_dict())
+
                 # 3. Check staleness
                 await state_manager.check_staleness()
 
