@@ -130,8 +130,7 @@ class LibgpiodV2Backend(GPIOBackend):
 
     def __init__(self):
         self._chip_path: Optional[str] = None
-        self._request = None
-        self._line_offsets: Dict[int, str] = {}
+        self._line_offsets: Dict[int, Any] = {}
         self._output_lines: set[int] = set()
 
     def open(self, chip_path: str) -> bool:
@@ -148,16 +147,26 @@ class LibgpiodV2Backend(GPIOBackend):
             return False
 
     def close(self) -> None:
-        if self._request:
+        for req in set(self._line_offsets.values()):
             try:
-                self._request.release()
+                req.release()
             except Exception:
                 pass
-            self._request = None
         self._line_offsets.clear()
         self._output_lines.clear()
+        self._chip_path = None
 
     def request_input(self, line_offset: int, consumer: str = "smart-water", bias: str = "pull_up") -> bool:
+        if not self._chip_path:
+            return False
+        # Release existing line if already requested
+        if line_offset in self._line_offsets:
+            try:
+                self._line_offsets[line_offset].release()
+            except Exception:
+                pass
+            del self._line_offsets[line_offset]
+
         try:
             import gpiod
             from gpiod.line import Direction, Bias
@@ -182,6 +191,16 @@ class LibgpiodV2Backend(GPIOBackend):
             return False
 
     def request_output(self, line_offset: int, consumer: str = "smart-water", initial_value: int = 0) -> bool:
+        if not self._chip_path:
+            return False
+        # Release existing line if already requested
+        if line_offset in self._line_offsets:
+            try:
+                self._line_offsets[line_offset].release()
+            except Exception:
+                pass
+            del self._line_offsets[line_offset]
+
         try:
             import gpiod
             from gpiod.line import Direction, Value

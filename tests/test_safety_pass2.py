@@ -476,3 +476,146 @@ async def test_failed_signature_rate_limiting_and_health_detail(tmp_path):
         assert data["hardware"]["failed_sig_count"] == 5
         assert data["hardware"]["last_gw_err"]["err"] == "esp_now_send_error"
 
+
+# -----------------------------------------------------------------------------
+# 14. Libgpiod v2 Backend Lifecycle & Resource Cleanup
+# -----------------------------------------------------------------------------
+def test_libgpiod_v2_backend_lifecycle_and_cleanup(monkeypatch):
+    import sys
+    import types
+    from app.hardware.gpio_backend import LibgpiodV2Backend
+
+    released_requests = []
+
+    class FakeRequest:
+        def __init__(self, offset, val=0):
+            self.offset = offset
+            self.val = val
+
+        def get_value(self, offset):
+            return self.val
+
+        def set_value(self, offset, val):
+            self.val = val
+
+        def release(self):
+            released_requests.append(self)
+
+    class FakeChip:
+        def __init__(self, path):
+            self.path = path
+
+        def close(self):
+            pass
+
+    fake_gpiod = types.ModuleType("gpiod")
+    fake_gpiod.Chip = FakeChip
+    fake_line = types.ModuleType("gpiod.line")
+
+    class Direction:
+        INPUT = 1
+        OUTPUT = 2
+
+    class Bias:
+        PULL_UP = 1
+        PULL_DOWN = 2
+
+    class Value:
+        INACTIVE = 0
+        ACTIVE = 1
+
+    fake_line.Direction = Direction
+    fake_line.Bias = Bias
+    fake_line.Value = Value
+    fake_gpiod.line = fake_line
+
+    class LineSettings:
+        def __init__(self):
+            self.direction = None
+            self.bias = None
+            self.output_value = None
+
+    fake_gpiod.LineSettings = LineSettings
+
+    def fake_request_lines(chip_path, consumer, config):
+        offset = list(config.keys())[0]
+        return FakeRequest(offset, val=1)
+
+    fake_gpiod.request_lines = fake_request_lines
+
+    monkeypatch.setitem(sys.modules, "gpiod", fake_gpiod)
+    monkeypatch.setitem(sys.modules, "gpiod.line", fake_line)
+
+    backend = LibgpiodV2Backend()
+    assert backend.open("/dev/gpiochip1") is True
+
+    # Request input line 10
+    assert backend.request_input(10, consumer="test-in") is True
+    assert backend.get_value(10) == 1
+
+    # Request output line 20
+    assert backend.request_output(20, consumer="test-out", initial_value=0) is True
+    backend.set_value(20, 1)
+
+    # Re-requesting line 10 should release old request
+    assert backend.request_input(10, consumer="test-in-2") is True
+    assert len(released_requests) == 1
+
+    # Close must release remaining lines and reset chip_path
+    backend.close()
+    assert len(released_requests) == 3  # 1 earlier + 2 on close
+    assert backend._chip_path is None
+    assert len(backend._line_offsets) == 0
+
+
+# -----------------------------------------------------------------------------
+# 15. HeadEnd GPIO Setup Fails Safe on Input Claim Failure
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_head_end_gpio_setup_fails_safe_on_input_claim_failure(monkeypatch):
+    from app.hardware.gpio_driver import HeadEndGPIODriver
+    from app.hardware.gpio_backend import GPIOBackend
+
+    class StubBackend(GPIOBackend):
+        def __init__(self):
+            self.closed = False
+
+        def open(self, chip_path: str) -> bool:
+            return True
+
+        def close(self) -> None:
+            self.closed = True
+
+        def request_input(self, line_offset: int, consumer: str = "test", bias: str = "pull_up") -> bool:
+            # Simulate failure claiming line_offset 12 (leak_sensor)
+            if line_offset == 12:
+                return False
+            return True
+
+        def request_output(self, line_offset: int, consumer: str = "test", initial_value: int = 0) -> bool:
+            return True
+
+        def get_value(self, line_offset: int) -> int:
+            return 0
+
+        def set_value(self, line_offset: int, value: int) -> None:
+            pass
+
+    stub = StubBackend()
+    monkeypatch.setattr("app.hardware.gpio_driver.create_gpio_backend", lambda: stub)
+    monkeypatch.setattr("os.path.exists", lambda path: True)
+
+    driver = HeadEndGPIODriver()
+    system_config.head_end.chip_path = "/dev/gpiochip1"
+    system_config.head_end.contactor_relay_pin = 15
+    system_config.head_end.tank_low_float_pin = 7
+    system_config.head_end.interlock_out_pin = 9
+    system_config.head_end.interlock_mid_pin = 11
+    system_config.head_end.leak_sensor_pin = 12
+
+    # Setup must return False because pin 12 failed to be claimed
+    ok = await driver.setup()
+    assert ok is False
+    assert driver.is_hardware_available is False
+    assert stub.closed is True
+

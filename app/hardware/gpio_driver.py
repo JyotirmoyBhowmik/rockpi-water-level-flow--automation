@@ -108,11 +108,14 @@ class HeadEndGPIODriver:
                 if pin_offset is not None:
                     if not self._backend.request_input(pin_offset, consumer=f"smart-water-{pin_name}", bias="pull_up"):
                         logger.error("Failed to claim %s on pin %d", pin_name, pin_offset)
+                        return False
 
             # Setup optional contactor feedback pin (Part 5.1)
             if cfg.contactor_feedback_pin is not None:
                 self._feedback_pin = cfg.contactor_feedback_pin
-                self._backend.request_input(self._feedback_pin, consumer="smart-water-contactor-fb", bias="pull_up")
+                if not self._backend.request_input(self._feedback_pin, consumer="smart-water-contactor-fb", bias="pull_up"):
+                    logger.error("Failed to claim contactor feedback on pin %d", self._feedback_pin)
+                    return False
 
             return True
 
@@ -122,7 +125,9 @@ class HeadEndGPIODriver:
             if success:
                 logger.info("Head-end GPIO initialized successfully on %s (active_high=%s)", chip_path, self._active_high)
             else:
-                logger.warning("Failed to configure lines on %s", chip_path)
+                logger.warning("Failed to configure lines on %s. Outputs locked OFF.", chip_path)
+                if self._backend:
+                    self._backend.close()
             return success
         except asyncio.TimeoutError:
             logger.error("Timeout (1s) opening GPIO chip %s", chip_path)
