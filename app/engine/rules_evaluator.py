@@ -14,7 +14,7 @@ import time
 from typing import Any, Dict, List, Literal, Optional, Union
 import uuid
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from app.alerts.telegram_client import telegram_notifier
 from app.config import system_config
 from app.core.state_manager import state_manager
@@ -26,9 +26,17 @@ logger = logging.getLogger("smart_water.rules")
 
 
 class RuleCondition(BaseModel):
-    source: str = Field(..., description="e.g. tank.low, interlock.state, zone_1.moisture, reservoir.state")
-    operator: Literal[">", "<", ">=", "<=", "==", "!=", "in_range"] = Field(...)
-    value: Union[float, int, str, bool, List[float]] = Field(...)
+    source: str = Field(..., description="e.g. tank.low, interlock.state, zone_1.moisture, reservoir.state, time.minutes, time.clock")
+    operator: Literal[">", "<", ">=", "<=", "==", "!=", "in_range", "between"] = Field(...)
+    value: Union[float, int, str, bool, List[Any]] = Field(...)
+
+    @model_validator(mode="after")
+    def validate_time_clock(self):
+        if self.source == "time.clock" and self.operator not in ("==", "!="):
+            raise ValueError(
+                "time.clock only supports == and != operators. Use time.minutes for range or window comparison."
+            )
+        return self
 
 
 class RuleAction(BaseModel):
@@ -55,6 +63,7 @@ class RuleDefinition(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     enabled: bool = Field(default=True)
     combinator: Literal["AND", "OR"] = Field(default="AND")
+    cooldown_s: int = Field(default=60, ge=0)
     conditions: List[RuleCondition] = Field(default_factory=list)
     actions: List[RuleAction] = Field(default_factory=list)
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -66,6 +75,7 @@ class UserRuleTemplate(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     description: Optional[str] = Field(default="")
     combinator: Literal["AND", "OR"] = Field(default="AND")
+    cooldown_s: int = Field(default=60, ge=0)
     conditions: List[RuleCondition] = Field(default_factory=list)
     actions: List[RuleAction] = Field(default_factory=list)
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -157,6 +167,7 @@ class RulesEvaluator:
             name=template_name,
             description=description,
             combinator=rule.combinator,
+            cooldown_s=rule.cooldown_s,
             conditions=rule.conditions,
             actions=rule.actions,
         )
@@ -209,19 +220,20 @@ class RulesEvaluator:
     async def evaluate_tick(self) -> None:
         """Evaluates enabled rules on periodic timer."""
         state = state_manager.get_state()
-        now = time.time()
+        mono_now = time.monotonic()
 
         for rule in self._rules_cache.values():
             if not rule.enabled or not rule.conditions:
                 continue
 
             last_run = self._last_rule_execution.get(rule.id, 0.0)
-            if now - last_run < 60.0:
+            cooldown = getattr(rule, "cooldown_s", 60)
+            if (mono_now - last_run) < cooldown:
                 continue
 
             if self._evaluate_conditions(rule.conditions, rule.combinator, state):
                 logger.info("Rule '%s' conditions met. Executing actions.", rule.name)
-                self._last_rule_execution[rule.id] = now
+                self._last_rule_execution[rule.id] = mono_now
                 await self._execute_actions(rule)
 
     def _evaluate_conditions(
@@ -232,6 +244,10 @@ class RulesEvaluator:
     ) -> bool:
         results = []
         for cond in conditions:
+            if cond.source == "time.clock" and cond.operator not in ("==", "!="):
+                logger.warning("time.clock only supports == and != operators, ignoring invalid operator '%s'", cond.operator)
+                results.append(False)
+                continue
             actual = self._resolve_source_value(cond.source, state)
             match = self._check_condition(actual, cond.operator, cond.value)
             results.append(match)
@@ -249,6 +265,9 @@ class RulesEvaluator:
         g = state.get("garden") or {}
         zones = g.get("zones") or {}
 
+        now_dt = datetime.now()
+        current_minutes = now_dt.hour * 60 + now_dt.minute
+
         mapping = {
             "tank.low": he.get("tank_low_float"),
             "motor.state": motor.get("state"),
@@ -256,7 +275,8 @@ class RulesEvaluator:
             "reservoir.state": "wet" if g.get("reservoir_wet") is True else ("dry" if g.get("reservoir_wet") is False else "unknown"),
             "leak.state": he.get("leak_detected"),
             "link.state": "online" if g.get("node_online") and not g.get("is_stale") else "offline",
-            "time.clock": datetime.now().strftime("%H:%M"),
+            "time.clock": now_dt.strftime("%H:%M"),
+            "time.minutes": current_minutes,
         }
 
         # Check per-zone sources
@@ -268,19 +288,98 @@ class RulesEvaluator:
 
         return mapping.get(source)
 
+    @staticmethod
+    def _parse_minute(val: Any) -> Optional[int]:
+        """Converts an HH:MM string or integer (0..1439) into minutes from midnight."""
+        if isinstance(val, (int, float)):
+            return int(val) % 1440
+        if isinstance(val, str):
+            v = val.strip()
+            if ":" in v:
+                parts = v.split(":")
+                if len(parts) == 2:
+                    try:
+                        h, m = int(parts[0]), int(parts[1])
+                        if 0 <= h <= 23 and 0 <= m <= 59:
+                            return h * 60 + m
+                    except ValueError:
+                        return None
+            elif v.isdigit():
+                return int(v) % 1440
+        return None
+
+    @classmethod
+    def _check_between(cls, actual: Any, target: Any) -> bool:
+        """
+        Checks if actual is within target window.
+        Supports:
+          - HH:MM windows like ["22:00", "04:00"] or "22:00-04:00" (including midnight-crossing).
+          - Minute ranges [1320, 240] (including midnight-crossing when start > end).
+          - Generic numeric bounds [low, high] where low <= actual <= high.
+        """
+        if actual is None:
+            return False
+
+        # 1. Extract start and end from target
+        start_val, end_val = None, None
+        if isinstance(target, (list, tuple)) and len(target) == 2:
+            start_val, end_val = target[0], target[1]
+        elif isinstance(target, str):
+            for sep in (" to ", "..", ",", "-"):
+                if sep in target:
+                    parts = target.split(sep, 1)
+                    start_val, end_val = parts[0].strip(), parts[1].strip()
+                    break
+
+        if start_val is None or end_val is None:
+            return False
+
+        # 2. Check if time-based
+        is_time_target = (isinstance(start_val, str) and ":" in start_val) or (isinstance(end_val, str) and ":" in end_val)
+        start_m = cls._parse_minute(start_val)
+        end_m = cls._parse_minute(end_val)
+        cur_m = cls._parse_minute(actual)
+
+        if is_time_target or (cur_m is not None and start_m is not None and end_m is not None and (start_m > end_m or (isinstance(actual, int) and 0 <= actual < 1440))):
+            if cur_m is None or start_m is None or end_m is None:
+                return False
+            if start_m <= end_m:
+                return start_m <= cur_m <= end_m
+            else:
+                # Midnight-crossing window (e.g. 22:00 to 04:00)
+                return cur_m >= start_m or cur_m <= end_m
+
+        # 3. Fallback: Generic numeric range comparison
+        try:
+            num_actual = float(actual)
+            num_start = float(start_val)
+            num_end = float(end_val)
+            if num_start <= num_end:
+                return num_start <= num_actual <= num_end
+            else:
+                return num_actual >= num_start or num_actual <= num_end
+        except (ValueError, TypeError):
+            return False
+
     def _check_condition(self, actual: Any, operator: str, target: Any) -> bool:
         if actual is None:
             return False
 
         try:
-            if operator == ">":
-                return float(actual) > float(target)
+            if operator == "between":
+                return self._check_between(actual, target)
+            elif operator == ">":
+                t = self._coerce_target(actual, target)
+                return float(actual) > float(t)
             elif operator == "<":
-                return float(actual) < float(target)
+                t = self._coerce_target(actual, target)
+                return float(actual) < float(t)
             elif operator == ">=":
-                return float(actual) >= float(target)
+                t = self._coerce_target(actual, target)
+                return float(actual) >= float(t)
             elif operator == "<=":
-                return float(actual) <= float(target)
+                t = self._coerce_target(actual, target)
+                return float(actual) <= float(t)
             elif operator == "==":
                 return str(actual).lower() == str(target).lower()
             elif operator == "!=":
@@ -291,6 +390,14 @@ class RulesEvaluator:
         except (ValueError, TypeError):
             return False
         return False
+
+    @classmethod
+    def _coerce_target(cls, actual: Any, target: Any) -> Any:
+        if isinstance(actual, int) and 0 <= actual < 1440 and isinstance(target, str) and ":" in target:
+            m = cls._parse_minute(target)
+            if m is not None:
+                return m
+        return target
 
     async def _execute_actions(self, rule: RuleDefinition) -> None:
         """Dispatches rule actions. Priority 0 failsafes always override rules."""
@@ -320,7 +427,9 @@ class RulesEvaluator:
             # 5. Webhook Post with SSRF Defense (Part 3.4)
             elif tgt == "webhook.post" and act.url:
                 from app.core.security import validate_webhook_url
-                is_safe, err_msg = validate_webhook_url(act.url, system_config.security.webhook_allowlist)
+                is_safe, err_msg = await asyncio.to_thread(
+                    validate_webhook_url, act.url, system_config.security.webhook_allowlist
+                )
                 if not is_safe:
                     logger.error("SSRF PROTECTION: Rule webhook '%s' rejected: %s", act.url, err_msg)
                     continue
@@ -332,6 +441,7 @@ class RulesEvaluator:
                     except Exception as e:
                         logger.error("Rule webhook error: %s", e)
                 asyncio.create_task(_post(act.url))
+
 
 
 rules_evaluator = RulesEvaluator()

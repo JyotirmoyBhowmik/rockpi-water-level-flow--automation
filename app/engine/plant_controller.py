@@ -13,7 +13,7 @@ from app.core.event_bus import bus
 from app.core.state_manager import state_manager
 from app.engine.failsafes import failsafe_engine
 from app.hardware.audio_driver import audio_controller
-from app.hardware.gateway_driver import garden_gateway
+from app.hardware.gateway_driver import GatewayCommandFailedException, garden_gateway
 from app.hardware.rtc import get_monotonic_now
 
 logger = logging.getLogger("smart_water.plants")
@@ -24,7 +24,7 @@ class PlantIrrigationController:
 
     def __init__(self):
         self._active_runs: Dict[str, Dict[str, Any]] = {}
-        self._tasks: set = set()
+        self._completion_tasks: Dict[str, asyncio.Task] = {}
         self._lock = asyncio.Lock()
 
     async def trigger_zone_pulse(
@@ -59,14 +59,31 @@ class PlantIrrigationController:
             if running_count >= 2:
                 return False, "Maximum 2 concurrent pumps allowed on battery/solar bus."
 
-            zone_idx = int(zone_key.split("_")[-1])
-            cmd_id = await garden_gateway.send_pump_run(zone_idx, clamped_sec)
+            if zone_key in self._active_runs:
+                return False, f"Zone {zone_key} pump is already running."
 
-            now_iso = datetime.now(timezone.utc).isoformat()
+            # Cancel any existing completion watcher task for this zone
+            prev_task = self._completion_tasks.pop(zone_key, None)
+            if prev_task and not prev_task.done():
+                prev_task.cancel()
+
+            zone_idx = int(zone_key.split("_")[-1])
             state = state_manager.get_state()
-            initial_pulses = state["garden"]["zones"][zone_key].get("flow_pulses", 0)
+            initial_pulses = state["garden"]["zones"].get(zone_key, {}).get("flow_pulses", 0)
 
             failsafe_engine.on_pump_started(zone_key, initial_pulses)
+
+            try:
+                cmd_id = await garden_gateway.send_pump_run(zone_idx, clamped_sec)
+            except GatewayCommandFailedException as exc:
+                failsafe_engine.rollback_pump_started(zone_key)
+                reason = f"Gateway command failed: {exc}"
+                alarm_msg = f"Failed to command pump on {zone_key}: {exc}"
+                await state_manager.set_alarm(f"pump_fail_{zone_key}", alarm_msg)
+                logger.error(alarm_msg)
+                return False, reason
+
+            now_iso = datetime.now(timezone.utc).isoformat()
             self._active_runs[zone_key] = {
                 "running": True,
                 "cmd_id": cmd_id,
@@ -90,44 +107,71 @@ class PlantIrrigationController:
                 except asyncio.CancelledError:
                     pass
 
-            t = asyncio.create_task(_completion_watcher())
-            self._tasks.add(t)
-            t.add_done_callback(self._tasks.discard)
+            watcher_task = asyncio.create_task(_completion_watcher())
+            self._completion_tasks[zone_key] = watcher_task
 
             return True, f"Zone {zone_key} energized for {clamped_sec}s."
 
     async def stop_zone_pulse(self, zone_key: str, reason: str = "manual_stop") -> Tuple[bool, str]:
         """Manually stops an active pump run."""
         async with self._lock:
+            watcher = self._completion_tasks.pop(zone_key, None)
+            if watcher and not watcher.done():
+                watcher.cancel()
+
             zone_idx = int(zone_key.split("_")[-1])
-            await garden_gateway.send_pump_stop(zone_idx)
+            try:
+                await garden_gateway.send_pump_stop(zone_idx)
+            except Exception as e:
+                logger.warning("Failed to dispatch stop signal to gateway: %s", e)
+
             await self.on_pump_completed(zone_key, reason=reason)
             return True, f"Zone {zone_key} stop signal dispatched."
 
     async def stop_all_zones(self, reason: str = "emergency_stop") -> None:
         """Kills all active zone pumps immediately."""
         async with self._lock:
-            for t in list(self._tasks):
-                t.cancel()
-            self._tasks.clear()
-            await garden_gateway.send_stop_all()
+            for watcher in self._completion_tasks.values():
+                if not watcher.done():
+                    watcher.cancel()
+            self._completion_tasks.clear()
+
+            try:
+                await garden_gateway.send_stop_all()
+            except Exception as e:
+                logger.warning("Failed to dispatch stop all signal: %s", e)
+
             for z_key in list(self._active_runs.keys()):
                 await self.on_pump_completed(z_key, reason=reason)
 
     async def on_pump_completed(self, zone_key: str, reason: str = "done") -> None:
-        """Called when node signals completion or timer expires."""
+        """Called when node signals completion or timer expires. Idempotent."""
+        watcher = self._completion_tasks.pop(zone_key, None)
+        if watcher and not watcher.done():
+            watcher.cancel()
+
         run_info = self._active_runs.pop(zone_key, None)
+        if run_info is None:
+            return  # Idempotent: second call is a no-op
+
+        failsafe_engine.rollback_pump_started(zone_key)
         now = time.time()
         z_cfg = system_config.zones.get(zone_key)
+        try:
+            zone_idx = int(zone_key.split("_")[-1])
+            await state_manager.update_garden_pump(zone_idx, False, reason=reason)
+        except (ValueError, IndexError):
+            pass
 
-        duration_s = 0
-        if run_info:
-            duration_s = int(get_monotonic_now() - run_info["started_mono"])
-            started_iso = run_info["started_iso"]
-            await state_manager.log_run(f"pump.{zone_key}", started_iso, duration_s, reason)
+        duration_s = int(get_monotonic_now() - run_info["started_mono"])
+        started_iso = run_info["started_iso"]
+        source = run_info.get("source", "manual")
+        await state_manager.log_run(f"pump.{zone_key}", started_iso, duration_s, reason)
 
-        # Enforce zone cooldown lockout (default 6h)
-        if z_cfg:
+        # Enforce zone cooldown lockout (default 6h) ONLY for auto_moisture and rule:*
+        is_cooldown_source = (source == "auto_moisture") or (isinstance(source, str) and source.startswith("rule:"))
+        is_estop = reason in ("emergency_stop", "e-stop")
+        if is_cooldown_source and not is_estop and z_cfg:
             cooldown_s = z_cfg.cooldown_hours * 3600.0
             lockout_until = now + cooldown_s
             await state_manager.set_zone_cooldown(zone_key, lockout_until)
@@ -136,6 +180,7 @@ class PlantIrrigationController:
         logger.info(log_msg)
         await state_manager.log_event("ZONE_PUMP_STOP", "INFO", log_msg, {"zone": zone_key, "duration_s": duration_s})
         await bus.publish("pump:stopped", {"zone": zone_key, "duration_s": duration_s, "reason": reason})
+
 
     async def evaluate_auto_watering(self) -> None:
         """

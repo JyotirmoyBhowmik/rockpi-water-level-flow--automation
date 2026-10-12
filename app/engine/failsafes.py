@@ -369,6 +369,11 @@ class FailsafeSafetyEngine:
         self._zone_run_start_mono[zone_key] = get_monotonic_now()
         self._zone_pulses_start[zone_key] = initial_pulses
 
+    def rollback_pump_started(self, zone_key: str) -> None:
+        """Rolls back start tracking if pump command failed or ended."""
+        self._zone_run_start_mono.pop(zone_key, None)
+        self._zone_pulses_start.pop(zone_key, None)
+
     async def check_flow_meter_health(self, zone_key: str, current_pulses: int) -> None:
         """
         Flow check (Part 2.2):
