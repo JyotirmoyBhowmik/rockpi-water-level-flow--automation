@@ -8,6 +8,7 @@ Validates bi-directional serialization and parsing against protocol/messages.jso
   - Signature tampering rejection
 """
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -15,10 +16,17 @@ import shutil
 import subprocess
 import pytest
 
+from app.core.state_manager import state_manager
+from app.engine.plant_controller import plant_controller
+from app.engine.scheduler import scheduler
+from app.hardware.gateway_driver import garden_gateway
 from app.hardware.protocol import (
     AckPacket,
     CommandPacket,
     FlowPacket,
+    GatewayErrPacket,
+    GatewayHbPacket,
+    GatewayInitPacket,
     HeartbeatPacket,
     PumpEventPacket,
     SequenceTracker,
@@ -302,3 +310,170 @@ async def test_gateway_driver_write_packet_verified_by_cpp(monkeypatch):
     assert len(results) == 3
     for r in results:
         assert r.startswith("OK "), f"C++ rejected packet from gateway_driver: {r}"
+
+
+@pytest.mark.asyncio
+async def test_golden_vectors_gateway_routing_to_scheduler():
+    """
+    Feeds golden-vector signed lines from protocol/messages.json through
+    parse_and_validate_packet -> scheduler._on_gateway_packet and asserts
+    state is updated:
+      - heartbeat updates timestamps, node_online, uptime_s, and nonce
+      - soil updates voltage
+      - flow pulses accumulate with real period_ms
+      - pump on updates running state, and pump off completes the run
+      - command ack resolves pending future in garden_gateway
+      - dict compatibility branch routes through identical functions
+    """
+    spec_path = Path("protocol") / "messages.json"
+    with open(spec_path, "r", encoding="utf-8") as f:
+        spec = json.load(f)
+
+    vectors_by_name = {v["name"]: v for v in spec["golden_vectors"]}
+    seq_tracker = SequenceTracker()
+
+    # 1. Heartbeat packet
+    hb_vec = vectors_by_name["heartbeat_packet"]
+    hb_pkt, err = parse_and_validate_packet(hb_vec["signed_line"], hb_vec["secret_key"], seq_tracker)
+    assert err is None
+    assert isinstance(hb_pkt, HeartbeatPacket)
+    assert hb_pkt.nonce == 1001
+
+    await scheduler._on_gateway_packet(hb_pkt)
+    st = state_manager.get_state()
+    assert st["garden"]["node_online"] is True
+    assert st["garden"]["last_heartbeat_ts"] is not None
+    assert st["garden"]["uptime_s"] == 120
+    assert st["garden"]["boot_count"] == 1001
+    assert st["garden"]["reservoir_wet"] is True
+
+    # 2. Soil probe packet
+    soil_vec = vectors_by_name["soil_probe_packet"]
+    soil_pkt, err = parse_and_validate_packet(soil_vec["signed_line"], soil_vec["secret_key"], seq_tracker)
+    assert err is None
+    assert isinstance(soil_pkt, SoilPacket)
+
+    await scheduler._on_gateway_packet(soil_pkt)
+    st = state_manager.get_state()
+    assert st["garden"]["zones"]["zone_1"]["voltage"] == 1.842
+
+    # 3. Flow delta packet (accumulates pulses with real period_ms)
+    flow_vec = vectors_by_name["flow_delta_packet"]
+    flow_pkt, err = parse_and_validate_packet(flow_vec["signed_line"], flow_vec["secret_key"], seq_tracker)
+    assert err is None
+    assert isinstance(flow_pkt, FlowPacket)
+    assert flow_pkt.delta_pulses == 15
+    assert flow_pkt.period_ms == 1000
+
+    prev_flow_pulses = st["garden"]["zones"]["zone_1"].get("flow_pulses", 0)
+    await scheduler._on_gateway_packet(flow_pkt)
+    st = state_manager.get_state()
+    assert st["garden"]["zones"]["zone_1"]["flow_pulses"] == prev_flow_pulses + 15
+    assert st["garden"]["zones"]["zone_1"]["flow_delta"] == 15
+    assert st["garden"]["zones"]["zone_1"]["flow_period_ms"] == 1000
+
+    # 4. Pump event packet (on=True)
+    pump_vec = vectors_by_name["pump_event_packet"]
+    pump_pkt, err = parse_and_validate_packet(pump_vec["signed_line"], pump_vec["secret_key"], seq_tracker)
+    assert err is None
+    assert isinstance(pump_pkt, PumpEventPacket)
+    assert pump_pkt.on is True
+
+    await scheduler._on_gateway_packet(pump_pkt)
+    st = state_manager.get_state()
+    assert st["garden"]["zones"]["zone_1"]["pump_running"] is True
+
+    # 5. Command Ack packet (seq=5) resolves pending command future in garden_gateway
+    loop = asyncio.get_running_loop()
+    ack_fut = loop.create_future()
+    garden_gateway._pending_acks["cmd-001"] = ack_fut
+
+    ack_vec = vectors_by_name["command_ack_packet"]
+    ack_pkt, err = parse_and_validate_packet(ack_vec["signed_line"], ack_vec["secret_key"], seq_tracker)
+    assert err is None
+    assert isinstance(ack_pkt, AckPacket)
+
+    await scheduler._on_gateway_packet(ack_pkt)
+    assert ack_fut.done() is True
+    resolved_ack = ack_fut.result()
+    assert resolved_ack.id == "cmd-001"
+    assert resolved_ack.status == "ok"
+
+    # 6. Pump off event (seq=6) completes active run in plant_controller
+    plant_controller._active_runs["zone_1"] = {
+        "running": True,
+        "cmd_id": "test-run-cmd-1",
+        "duration_s": 15,
+        "started_mono": 1000.0,
+        "started_iso": "2026-10-12T12:00:00Z",
+        "source": "test",
+    }
+    assert "zone_1" in plant_controller._active_runs
+
+    unsigned_off = format_pump_unsigned(1001, 6, 1, False, "done", 15)
+    signed_off = sign_packet_string(unsigned_off, SHARED_KEY)
+    pump_off_pkt, err = parse_and_validate_packet(signed_off, SHARED_KEY, seq_tracker)
+    assert err is None
+    assert isinstance(pump_off_pkt, PumpEventPacket)
+    assert pump_off_pkt.on is False
+
+    await scheduler._on_gateway_packet(pump_off_pkt)
+    st = state_manager.get_state()
+    assert st["garden"]["zones"]["zone_1"]["pump_running"] is False
+    assert "zone_1" not in plant_controller._active_runs  # Completed!
+
+    # 7. Dict branch routed through the same functions
+    dict_flow = {
+        "t": "flow",
+        "z": 2,
+        "delta_pulses": 25,
+        "period_ms": 2500,
+    }
+    prev_z2_pulses = st["garden"]["zones"]["zone_2"].get("flow_pulses", 0)
+    await scheduler._on_gateway_packet(dict_flow)
+    st = state_manager.get_state()
+    assert st["garden"]["zones"]["zone_2"]["flow_pulses"] == prev_z2_pulses + 25
+    assert st["garden"]["zones"]["zone_2"]["flow_delta"] == 25
+    assert st["garden"]["zones"]["zone_2"]["flow_period_ms"] == 2500
+
+
+def test_firmware_gateway_error_and_status_validation():
+    """
+    Verifies that locally generated JSON lines from firmware/gateway/src/main.cpp
+    (using 'v':'1.1' string) validate as GatewayErrPacket, GatewayInitPacket, GatewayHbPacket.
+    """
+    # 1. Delivery failed error
+    raw_err1 = b'{"v":"1.1","t":"gw_err","err":"esp_now_delivery_failed"}\n'
+    pkt1, err1 = parse_and_validate_packet(raw_err1, "dummy_key")
+    assert err1 is None
+    assert isinstance(pkt1, GatewayErrPacket)
+    assert pkt1.err == "esp_now_delivery_failed"
+    assert str(pkt1.v) == "1.1"
+
+    # 2. Send error with code
+    raw_err2 = b'{"v":"1.1","t":"gw_err","err":"esp_now_send_error","code":1}\n'
+    pkt2, err2 = parse_and_validate_packet(raw_err2, "dummy_key")
+    assert err2 is None
+    assert isinstance(pkt2, GatewayErrPacket)
+    assert pkt2.err == "esp_now_send_error"
+    assert pkt2.code == 1
+
+    # 3. Broadcast MAC error
+    raw_err3 = b'{"v":"1.1","t":"gw_err","err":"broadcast_mac_not_allowed"}\n'
+    pkt3, err3 = parse_and_validate_packet(raw_err3, "dummy_key")
+    assert err3 is None
+    assert isinstance(pkt3, GatewayErrPacket)
+
+    # 4. Gateway init announce
+    raw_init = b'{"v":"1.1","t":"gw_init","channel":1}\n'
+    pkt4, err4 = parse_and_validate_packet(raw_init, "dummy_key")
+    assert err4 is None
+    assert isinstance(pkt4, GatewayInitPacket)
+    assert pkt4.channel == 1
+
+    # 5. Gateway periodic heartbeat
+    raw_hb = b'{"v":"1.1","t":"gw_hb","uptime_s":45}\n'
+    pkt5, err5 = parse_and_validate_packet(raw_hb, "dummy_key")
+    assert err5 is None
+    assert isinstance(pkt5, GatewayHbPacket)
+    assert pkt5.uptime_s == 45

@@ -262,24 +262,26 @@ class AckPacket(BasePacket):
 
 # Gateway internal messages (over USB serial)
 class GatewayInitPacket(BaseModel):
-    v: Literal["1.1"] = PROTOCOL_VERSION
+    v: Union[Literal["1.1"], Literal[1], Literal["1"]] = PROTOCOL_VERSION
     t: Literal["gw_init"] = "gw_init"
     uptime_s: int = 0
     mac: str = ""
+    channel: Optional[int] = None
 
 
 class GatewayHbPacket(BaseModel):
-    v: Literal["1.1"] = PROTOCOL_VERSION
+    v: Union[Literal["1.1"], Literal[1], Literal["1"]] = PROTOCOL_VERSION
     t: Literal["gw_hb"] = "gw_hb"
     uptime_s: int = 0
     free_heap: int = 0
 
 
 class GatewayErrPacket(BaseModel):
-    v: Literal["1.1"] = PROTOCOL_VERSION
+    v: Union[Literal["1.1"], Literal[1], Literal["1"]] = PROTOCOL_VERSION
     t: Literal["gw_err"] = "gw_err"
     err: str
     detail: str = ""
+    code: Optional[int] = None
 
 
 PacketModel = Union[

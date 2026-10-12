@@ -80,7 +80,7 @@ void on_esp_now_recv(const uint8_t *mac_addr, const uint8_t *data, int len) {
 
 void on_esp_now_send(const uint8_t *mac_addr, esp_now_send_status_t status) {
     if (status != ESP_NOW_SEND_SUCCESS) {
-        Serial.println("{\"v\":1,\"t\":\"gw_err\",\"err\":\"esp_now_delivery_failed\"}");
+        Serial.println("{\"v\":\"1.1\",\"t\":\"gw_err\",\"err\":\"esp_now_delivery_failed\"}");
     }
 }
 
@@ -96,7 +96,7 @@ void setup() {
 
     // Validate unicast peer address
     if (is_broadcast_mac(TARGET_NODE_MAC) || is_zero_mac(TARGET_NODE_MAC)) {
-        Serial.println("{\"v\":1,\"t\":\"gw_err\",\"err\":\"broadcast_mac_not_allowed\"}");
+        Serial.println("{\"v\":\"1.1\",\"t\":\"gw_err\",\"err\":\"broadcast_mac_not_allowed\"}");
         while (true) {
             blink_led(50);
             delay(500);
@@ -114,7 +114,7 @@ void setup() {
 
     // Initialize ESP-NOW
     if (esp_now_init() != ESP_OK) {
-        Serial.println("{\"v\":1,\"t\":\"gw_err\",\"err\":\"esp_now_init_failed\"}");
+        Serial.println("{\"v\":\"1.1\",\"t\":\"gw_err\",\"err\":\"esp_now_init_failed\"}");
         return;
     }
 
@@ -134,11 +134,11 @@ void setup() {
     load_16byte_key(ESPNOW_LMK, peer_info.lmk);
 
     if (esp_now_add_peer(&peer_info) != ESP_OK) {
-        Serial.println("{\"v\":1,\"t\":\"gw_err\",\"err\":\"add_peer_failed\"}");
+        Serial.println("{\"v\":\"1.1\",\"t\":\"gw_err\",\"err\":\"add_peer_failed\"}");
     }
 
     // Gateway announce
-    Serial.print("{\"v\":1,\"t\":\"gw_init\",\"channel\":");
+    Serial.print("{\"v\":\"1.1\",\"t\":\"gw_init\",\"channel\":");
     Serial.print(ESPNOW_WIFI_CHANNEL);
     Serial.println("}");
 
@@ -151,7 +151,7 @@ void loop() {
     // 1. Emit Gateway Heartbeat every 10 seconds
     if (now - last_gw_hb_ms >= GW_HEARTBEAT_INTERVAL_MS) {
         last_gw_hb_ms = now;
-        Serial.print("{\"v\":1,\"t\":\"gw_hb\",\"uptime_s\":");
+        Serial.print("{\"v\":\"1.1\",\"t\":\"gw_hb\",\"uptime_s\":");
         Serial.print(now / 1000);
         Serial.println("}");
     }
@@ -173,7 +173,7 @@ void loop() {
                 if (result == ESP_OK) {
                     blink_led(15);
                 } else {
-                    Serial.print("{\"v\":1,\"t\":\"gw_err\",\"err\":\"esp_now_send_error\",\"code\":");
+                    Serial.print("{\"v\":\"1.1\",\"t\":\"gw_err\",\"err\":\"esp_now_send_error\",\"code\":");
                     Serial.print((int)result);
                     Serial.println("}");
                 }

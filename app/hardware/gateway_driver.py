@@ -82,6 +82,17 @@ class GardenGatewayDriver:
     def set_packet_callback(self, cb: Callable[[PacketModel], Coroutine[Any, Any, None]]) -> None:
         self._on_packet_callback = cb
 
+    def resolve_ack(self, ack: Any) -> bool:
+        """Resolves a pending command Future with incoming AckPacket or ack dict."""
+        cmd_id = getattr(ack, "id", None) or (ack.get("id") if isinstance(ack, dict) else None)
+        if not cmd_id:
+            return False
+        fut = self._pending_acks.get(cmd_id)
+        if fut and not fut.done():
+            fut.set_result(ack)
+            return True
+        return False
+
     async def start(self) -> None:
         """Starts the gateway serial receiver loop."""
         if self._running:
@@ -180,7 +191,8 @@ class GardenGatewayDriver:
                     logger.info("Pump run command %s acknowledged by node (Zone %d, %ds)", cmd_id, zone_idx, run_seconds)
                     return cmd_id
                 else:
-                    logger.error("Pump run command %s rejected by node: %s", cmd_id, ack.message)
+                    ack_err = getattr(ack, "err", getattr(ack, "message", ""))
+                    logger.error("Pump run command %s rejected by node: %s", cmd_id, ack_err)
                     raise GatewayCommandFailedException(f"GATEWAY_COMMAND_FAILED: Node rejected ({ack.status})")
             except asyncio.TimeoutError:
                 logger.warning("Timeout waiting for Ack on command %s (attempt %d/%d)", cmd_id, attempt, max_retries)
@@ -312,9 +324,7 @@ class GardenGatewayDriver:
 
                     # Handle Ack packets
                     if isinstance(pkt, AckPacket):
-                        fut = self._pending_acks.get(pkt.id)
-                        if fut and not fut.done():
-                            fut.set_result(pkt)
+                        self.resolve_ack(pkt)
 
                     # Forward to callback
                     if self._on_packet_callback:

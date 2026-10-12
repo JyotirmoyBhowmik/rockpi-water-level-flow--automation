@@ -16,7 +16,13 @@ from app.engine.plant_controller import plant_controller
 from app.engine.rules_evaluator import rules_evaluator
 from app.hardware.gateway_driver import garden_gateway
 from app.hardware.gpio_driver import head_end_gpio
-from app.hardware.protocol import FlowPacket, HeartbeatPacket, SoilPacket
+from app.hardware.protocol import (
+    AckPacket,
+    FlowPacket,
+    HeartbeatPacket,
+    PumpEventPacket,
+    SoilPacket,
+)
 
 logger = logging.getLogger("smart_water.scheduler")
 
@@ -55,56 +61,107 @@ class SystemScheduler:
                     pass
         logger.info("SystemScheduler stopped.")
 
+    async def _handle_heartbeat(
+        self,
+        seq: int,
+        uptime_s: int,
+        res_wet: bool,
+        ads_ok: bool,
+        pumps: list[int],
+        rssi: int,
+        nonce: int,
+    ) -> None:
+        await state_manager.update_garden_heartbeat(
+            seq=seq,
+            uptime_s=uptime_s,
+            res_wet=res_wet,
+            ads_ok=ads_ok,
+            pumps=pumps,
+            rssi=rssi,
+            nonce=nonce,
+            boot=nonce,
+        )
+
+    async def _handle_soil(self, zone_idx: int, volts: float) -> None:
+        await state_manager.update_garden_soil(zone_idx, volts)
+
+    async def _handle_flow(self, zone_idx: int, delta_pulses: int, period_ms: int) -> None:
+        await state_manager.update_garden_flow_delta(zone_idx, delta_pulses, period_ms=period_ms)
+        z_key = f"zone_{zone_idx}"
+        state = state_manager.get_state()
+        current_total = state["garden"]["zones"][z_key].get("flow_pulses", 0)
+        await failsafe_engine.check_flow_meter_health(z_key, current_total)
+
+    async def _handle_pump(self, zone_idx: int, is_on: bool, reason: str) -> None:
+        await state_manager.update_garden_pump(zone_idx, is_on, reason)
+        if not is_on:
+            await plant_controller.on_pump_completed(f"zone_{zone_idx}", reason=reason)
+
+    async def _handle_ack(self, ack: Any) -> None:
+        garden_gateway.resolve_ack(ack)
+
     async def _on_gateway_packet(self, packet: Any) -> None:
         """Processes incoming Protocol v1.1 packets from garden gateway."""
         if isinstance(packet, HeartbeatPacket):
-            await state_manager.update_garden_heartbeat(
+            await self._handle_heartbeat(
                 seq=packet.seq,
                 uptime_s=packet.uptime_s,
                 res_wet=packet.res_wet,
                 ads_ok=packet.ads_ok,
                 pumps=packet.pumps,
                 rssi=packet.rssi,
-                boot=packet.boot,
+                nonce=packet.nonce,
             )
         elif isinstance(packet, SoilPacket):
-            await state_manager.update_garden_soil(packet.z, packet.volts)
+            await self._handle_soil(zone_idx=packet.z, volts=packet.volts)
         elif isinstance(packet, FlowPacket):
-            await state_manager.update_garden_flow_delta(packet.z, packet.pulses_delta, period_ms=1000)
-            z_key = f"zone_{packet.z}"
-            state = state_manager.get_state()
-            current_total = state["garden"]["zones"][z_key].get("flow_pulses", 0)
-            await failsafe_engine.check_flow_meter_health(z_key, current_total)
+            await self._handle_flow(
+                zone_idx=packet.z,
+                delta_pulses=packet.delta_pulses,
+                period_ms=packet.period_ms,
+            )
+        elif isinstance(packet, PumpEventPacket):
+            await self._handle_pump(
+                zone_idx=packet.z,
+                is_on=packet.on,
+                reason=packet.reason,
+            )
+        elif isinstance(packet, AckPacket):
+            await self._handle_ack(packet)
         elif isinstance(packet, dict):
-            # Dict compatibility for raw or legacy handlers
+            # Dict compatibility for raw or legacy handlers routed through identical functions
             ptype = packet.get("t")
             if ptype == "hb":
-                await state_manager.update_garden_heartbeat(
+                await self._handle_heartbeat(
                     seq=packet.get("seq", 0),
                     uptime_s=packet.get("uptime_s", 0),
                     res_wet=packet.get("res_wet", False),
                     ads_ok=packet.get("ads_ok", True),
                     pumps=packet.get("pumps", [0, 0, 0, 0]),
                     rssi=packet.get("rssi", 0),
-                    boot=packet.get("boot", 0),
+                    nonce=packet.get("nonce", packet.get("boot", 0)),
                 )
             elif ptype == "soil":
-                await state_manager.update_garden_soil(packet.get("z", 1), packet.get("volts", 0.0))
+                await self._handle_soil(
+                    zone_idx=packet.get("z", 1),
+                    volts=packet.get("volts", 0.0),
+                )
             elif ptype == "flow":
-                delta = packet.get("pulses_delta", packet.get("pulses", 0))
-                zone_idx = packet.get("z", 1)
-                await state_manager.update_garden_flow_delta(zone_idx, delta, period_ms=1000)
-                z_key = f"zone_{zone_idx}"
-                state = state_manager.get_state()
-                current_total = state["garden"]["zones"][z_key].get("flow_pulses", 0)
-                await failsafe_engine.check_flow_meter_health(z_key, current_total)
+                delta = packet.get("delta_pulses", packet.get("pulses_delta", packet.get("pulses", 0)))
+                period = packet.get("period_ms", 1000)
+                await self._handle_flow(
+                    zone_idx=packet.get("z", 1),
+                    delta_pulses=delta,
+                    period_ms=period,
+                )
             elif ptype == "pump":
-                zone_idx = packet.get("z", 1)
-                is_on = packet.get("on", False)
-                reason = packet.get("reason", "unknown")
-                await state_manager.update_garden_pump(zone_idx, is_on, reason)
-                if not is_on:
-                    await plant_controller.on_pump_completed(f"zone_{zone_idx}", reason=reason)
+                await self._handle_pump(
+                    zone_idx=packet.get("z", 1),
+                    is_on=packet.get("on", False),
+                    reason=packet.get("reason", "unknown"),
+                )
+            elif ptype == "ack":
+                await self._handle_ack(packet)
 
     async def _head_end_poll_loop(self) -> None:
         """1Hz Loop: Polls PC817 inputs, evaluates interlocks, checks staleness."""

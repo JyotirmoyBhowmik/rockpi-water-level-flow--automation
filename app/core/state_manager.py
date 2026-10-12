@@ -249,10 +249,19 @@ class StateManager:
     # -------------------------------------------------------------------------
 
     async def update_garden_heartbeat(
-        self, seq: int, uptime_s: int, res_wet: bool, ads_ok: bool, pumps: List[int], rssi: int, boot: int = 0
+        self,
+        seq: int,
+        uptime_s: int,
+        res_wet: bool,
+        ads_ok: bool,
+        pumps: List[int],
+        rssi: int,
+        boot: int = 0,
+        nonce: Optional[int] = None,
     ) -> None:
         async with self._lock:
             now = time.time()
+            effective_nonce = nonce if nonce is not None else boot
             g = self._state["garden"]
             g["gateway_connected"] = True
             g["gateway_last_seen"] = now
@@ -263,7 +272,8 @@ class StateManager:
             g["is_stale"] = False
             g["state"] = "ONLINE"
             g["uptime_s"] = uptime_s
-            g["boot_count"] = boot
+            g["boot_count"] = effective_nonce
+            g["nonce"] = effective_nonce
             g["ads_ok"] = ads_ok
             g["rssi"] = rssi
             g["reservoir_wet"] = res_wet
@@ -298,7 +308,7 @@ class StateManager:
                     z["moisture_pct"] = None
                     z["calibrated"] = False
 
-    async def update_garden_flow_delta(self, zone_idx: int, delta_pulses: int, period_ms: int) -> None:
+    async def update_garden_flow_delta(self, zone_idx: int, delta_pulses: int, period_ms: int = 1000) -> None:
         async with self._lock:
             now = time.time()
             g = self._state["garden"]
@@ -309,7 +319,21 @@ class StateManager:
             if z_key in g["zones"]:
                 z = g["zones"][z_key]
                 z["flow_delta"] = delta_pulses
+                z["flow_period_ms"] = period_ms
                 z["flow_pulses"] = z.get("flow_pulses", 0) + delta_pulses
+                z["last_update_ts"] = now
+
+    async def update_garden_pump(self, zone_idx: int, is_on: bool, reason: str = "unknown") -> None:
+        async with self._lock:
+            now = time.time()
+            g = self._state["garden"]
+            g["node_online"] = True
+            g["node_last_seen"] = now
+            g["last_packet_ts"] = now
+            z_key = f"zone_{zone_idx}"
+            if z_key in g["zones"]:
+                z = g["zones"][z_key]
+                z["pump_running"] = bool(is_on)
                 z["last_update_ts"] = now
 
     async def set_garden_degraded(self, reason: str = "Stale heartbeat") -> None:
