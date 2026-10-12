@@ -483,7 +483,7 @@ Before turning on water supply mains or energizing the 230V AC pump circuit, com
 | **23** | System | Service crashes with `Memory limit exceeded (200M)` | Systemd cgroup killed process due to memory leak or buffering | `systemctl status smart-water.service \| grep Memory` | Verify SQLite PRAGMA cache limits (`cache_size = -2000`). Confirm SSE stream connections are disconnecting cleanly. |
 | **24** | System | Kernel Watchdog reboots board after 15 seconds | Application event loop blocked or CPU starved for >15s | `dmesg \| grep -i watchdog` | Check for blocking sync I/O in custom rules. Ensure `/dev/watchdog` ping interval is 5s (`watchdog.py`). |
 | **25** | Network | Refuses to start with `Refusing to bind to 0.0.0.0` | Security policy forbids binding public IP without explicit flag | `grep bind_address /etc/smart-water/config.yaml` | Set `bind_address` to your private Tailscale mesh IP (e.g., `100.x.y.z`) or set `allow_all_interfaces: true` if behind NAT. |
-| **26** | Security | API requests fail with `401 Unauthorized` | Missing or invalid Bearer token in request header | `python -m app.cli show-token` | Copy your token from `/etc/smart-water/auth.json` setup step or run `python -m app.cli rotate-token` to generate fresh token. |
+| **26** | Security | API requests fail with `401 Unauthorized` | Missing or invalid Bearer token in request header | `python -m app.cli show-token` | Copy your token from `/var/lib/smart-water/auth.json` setup step or run `python -m app.cli rotate-token` to generate fresh token. |
 | **27** | Database | SQLite database locked (`database is locked`) | Concurrency contention or missing WAL mode | `sqlite3 /var/lib/smart-water/system.db "PRAGMA journal_mode;"` | Verify WAL mode is active (`PRAGMA journal_mode=WAL`). Increase busy timeout if disk I/O on micro-SD card is slow. |
 | **28** | I2C | I2C devices missing from bus 7 (`i2cdetect -y 7` shows empty) | Radxa device tree overlay for I2C7 not enabled in `/boot/armbianEnv.txt` | `i2cdetect -y 7` | Add `overlays=i2c7` to `/boot/armbianEnv.txt` and reboot the ROCK Pi S. |
 | **29** | Contactor | Motor trips with `CONTACTOR_MISMATCH` or `WELDED_CONTACT` | Auxiliary contact feedback mismatch; coil energized but aux switch open, or coil off but aux closed | `python -m app.cli test-relay` | Inspect AC contactor physical contacts. Check NO auxiliary switch continuity wiring to Rock Pi S feedback GPIO. Replace contactor if contacts are welded. |
@@ -577,7 +577,7 @@ Rotate the cryptographic Bearer token at any time:
 ```bash
 sudo -u smartwater /opt/smart-water/venv/bin/python -m app.cli rotate-token
 ```
-The new raw token will be printed to stdout once and its SHA-256 hash written to `/etc/smart-water/auth.json`.
+The new raw token will be printed to stdout once and its SHA-256 hash written to `/var/lib/smart-water/auth.json`.
 
 ### 9.3 Systemd Service Management
 ```bash

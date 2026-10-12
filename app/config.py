@@ -113,7 +113,7 @@ class NetworkConfig(BaseModel):
 
 
 class SecurityConfig(BaseModel):
-    auth_token_file: str = Field(default="/etc/smart-water/auth.json", description="Path storing hashed API token")
+    auth_token_file: str = Field(default="/var/lib/smart-water/auth.json", description="Path storing hashed API token")
     rate_limit_per_minute: int = Field(default=60, ge=5, le=600, description="Rate limit for state-mutating endpoints")
     auth_failure_limit: int = Field(default=10, ge=3, le=50, description="Max failed auth per minute before IP block")
     webhook_allowlist: List[str] = Field(default_factory=list, description="Host allowlist for webhook action")

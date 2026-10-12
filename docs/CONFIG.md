@@ -49,7 +49,7 @@ network:
 
 # API Security & Rate Limiting
 security:
-  auth_token_file: "/etc/smart-water/auth.json"
+  auth_token_file: "/var/lib/smart-water/auth.json"
   rate_limit_per_minute: 60        # Sliding window rate limit per client IP
 
 # Overhead Tank Main Pump AC Motor Safeguards
