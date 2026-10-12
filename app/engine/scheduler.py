@@ -184,6 +184,12 @@ class SystemScheduler:
                     contactor_feedback=inputs.get("contactor_feedback"),
                 )
 
+                # 2b. Read power meter telemetry if enabled
+                from app.hardware.power_meter import power_meter
+                power_reading = await power_meter.read_telemetry()
+                if power_reading is not None:
+                    await state_manager.update_power_meter(power_reading.to_dict())
+
                 # 3. Check staleness
                 await state_manager.check_staleness()
 

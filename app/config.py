@@ -9,7 +9,7 @@ Honours SMART_WATER_DATA_DIR environment variable.
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator, SecretStr
 import yaml
 
@@ -146,6 +146,35 @@ class MotorConfig(BaseModel):
     drop_out_timeout_ms: int = Field(default=1000, ge=50, le=5000, description="Max milliseconds to wait for contactor drop-out")
 
 
+class PowerMeterConfig(BaseModel):
+    """
+    Configuration for optional motor power and current monitoring via
+    PZEM-004T v3 (Modbus RTU over USB-TTL) or SCT-013 CT + ADS1115 at head-end.
+    NOTE: Software current monitoring NEVER replaces the physical thermal overload relay.
+    """
+    enabled: bool = Field(default=False, description="Enable optional motor AC power monitoring (PZEM-004T v3 or SCT-013 CT)")
+    sensor_type: Literal["none", "pzem004t", "sct013_ads1115"] = Field(
+        default="none", description="Power sensor interface: pzem004t (Modbus RTU) or sct013_ads1115 (CT clamp via ADS1115)"
+    )
+    serial_port: str = Field(default="/dev/pzem", description="Serial device for PZEM-004T v3 (e.g. /dev/pzem or /dev/ttyUSB1)")
+    baud_rate: int = Field(default=9600, description="PZEM-004T baud rate (default 9600)")
+    modbus_address: int = Field(default=1, ge=1, le=247, description="PZEM-004T Modbus slave address (1-247, default 1)")
+    i2c_bus: int = Field(default=7, description="I2C bus number for ADS1115 CT input (default 7 on Rock Pi S)")
+    i2c_address: int = Field(default=0x48, description="I2C address for ADS1115 (default 0x48)")
+    ct_channel: int = Field(default=0, ge=0, le=3, description="ADS1115 analog input channel for CT clamp (0-3)")
+    ct_ratio: float = Field(default=30.0, ge=1.0, le=100.0, description="CT current rating for 1V RMS output, e.g. 30.0 for SCT-013-030")
+    voltage_min_v: float = Field(default=180.0, ge=100.0, le=250.0, description="Under-voltage cutoff threshold in Volts RMS (single-phase 230V window)")
+    voltage_max_v: float = Field(default=260.0, ge=210.0, le=300.0, description="Over-voltage cutoff threshold in Volts RMS (single-phase 230V window)")
+    voltage_fault_hold_s: float = Field(default=3.0, ge=0.5, le=30.0, description="Seconds voltage out-of-bounds must persist before tripping")
+    dry_run_current_pct: float = Field(default=65.0, ge=10.0, le=95.0, description="Current below this % of learned baseline indicates dry run / unloaded impeller")
+    dry_run_timeout_s: float = Field(default=5.0, ge=1.0, le=30.0, description="Seconds under-current must persist to trigger dry-run cutoff & lockout")
+    overload_current_pct: float = Field(default=135.0, ge=105.0, le=250.0, description="Current above this % of learned baseline indicates overload or locked rotor")
+    overload_timeout_s: float = Field(default=3.0, ge=0.5, le=30.0, description="Seconds over-current must persist to trigger overload cutoff & lockout")
+    inrush_blanking_s: float = Field(default=3.0, ge=0.0, le=10.0, description="Seconds after contactor pull-in to blank current threshold evaluation for inrush")
+    learning_runs_required: int = Field(default=5, ge=1, le=20, description="Number of healthy runs required to establish baseline current")
+    baseline_current_a: Optional[float] = Field(default=None, ge=0.1, le=100.0, description="Manually configured or learned baseline current in Amperes")
+
+
 class ZoneCalibration(BaseModel):
     dry_v: Optional[float] = Field(default=None, description="Calibration voltage in air (dry probe)")
     wet_v: Optional[float] = Field(default=None, description="Calibration voltage submerged in water")
@@ -207,6 +236,7 @@ class SystemConfig(BaseModel):
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     motor: MotorConfig = Field(default_factory=MotorConfig)
+    power_meter: PowerMeterConfig = Field(default_factory=PowerMeterConfig)
     zones: Dict[str, ZoneConfig] = Field(default_factory=lambda: {
         f"zone_{i}": ZoneConfig(name=f"Zone {i}", has_flow_meter=(i == 1)) for i in range(1, 5)
     })

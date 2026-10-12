@@ -162,6 +162,15 @@ class FailsafeSafetyEngine:
         else:
             self._feedback_mismatch_start_mono = None
 
+        # 6. Power Meter Motor Protection (dry-run, overload, voltage out-of-bounds)
+        if motor["state"] == "RUNNING":
+            from app.hardware.power_meter import power_meter
+            reading = power_meter._last_reading
+            if reading is not None:
+                started_mono = state_manager._state["motor"]["started_at_monotonic"]
+                elapsed_s = (mono_now - started_mono) if started_mono else 0.0
+                await self.evaluate_motor_power_safety(reading, elapsed_s)
+
         return {
             "wiring_fault": self.wiring_fault_active,
             "leak_active": self.leak_alarm_active,
@@ -170,6 +179,33 @@ class FailsafeSafetyEngine:
             "manual_motor_lockout": self.manual_motor_lockout,
             "feedback_mismatch": self._feedback_mismatch_start_mono is not None,
         }
+
+    async def evaluate_motor_power_safety(
+        self,
+        reading: Any,
+        run_elapsed_s: float,
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Evaluates active motor run against power meter protections:
+          - Dry-run / loss-of-prime (current < X% of baseline for > N s)
+          - Overload / locked-rotor (current > Y% of baseline for > N s)
+          - Single-phase voltage under/over window violations (> N s)
+        """
+        from app.hardware.power_meter import power_meter
+        is_safe, fault_type, alarm_msg = power_meter.evaluate_power_safety(reading, run_elapsed_s)
+        if not is_safe and fault_type and alarm_msg:
+            logger.critical("SAFETY INTERLOCK: Power meter trip: %s", alarm_msg)
+            from app.engine.motor_controller import motor_controller
+            await motor_controller.stop_motor(reason=fault_type)
+            self.manual_motor_lockout = True
+            await state_manager.set_motor_manual_lock(True)
+            await state_manager.set_motor_state("FAULT", reason=fault_type)
+            await state_manager.set_alarm(fault_type, alarm_msg)
+            await audio_controller.speak(f"Emergency: Motor tripped on {fault_type.replace('_', ' ')}. Lockout active.", priority=0)
+            await telegram_notifier.send_alert(fault_type.upper(), alarm_msg)
+            return False, alarm_msg
+
+        return True, None
 
     # -------------------------------------------------------------------------
     # 2. Motor Start Authorization Check
@@ -243,6 +279,12 @@ class FailsafeSafetyEngine:
                 remaining_s = int(min_off_s - off_elapsed)
                 return False, f"Minimum OFF time active ({remaining_s}s remaining). Contactor protected."
 
+        # Mains Voltage Window Check via Power Meter (single-phase 230V window)
+        from app.hardware.power_meter import power_meter
+        v_ok, v_err = power_meter.check_voltage_for_start()
+        if not v_ok:
+            return False, v_err
+
         return True, None
 
     def reset_motor_lockout(self) -> Tuple[bool, Optional[str]]:
@@ -272,7 +314,18 @@ class FailsafeSafetyEngine:
 
         # Clear in-memory alarms and reset latched wiring fault
         state_manager.reset_wiring_fault()
-        for k in ["motor_timeout", "contactor_mismatch", "welded_contact", "relay_write_failed", "head_end_input_lost"]:
+        for k in [
+            "motor_timeout",
+            "contactor_mismatch",
+            "welded_contact",
+            "relay_write_failed",
+            "head_end_input_lost",
+            "dry_run",
+            "dry_run_current",
+            "overload",
+            "motor_overload_current",
+            "voltage_out_of_bounds",
+        ]:
             state_manager._state["alarms"].pop(k, None)
 
         logger.info("Motor safety lockouts and cooldown cleared by operator. State reset to OFF.")

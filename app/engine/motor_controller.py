@@ -48,6 +48,13 @@ class MotorController:
                 logger.warning("Motor start rejected: %s", reason)
                 return False, f"Start rejected: {reason}"
 
+            # Mains Voltage Window Check via Power Meter (Part: single-phase 230V window)
+            from app.hardware.power_meter import power_meter
+            v_ok, v_err = power_meter.check_voltage_for_start()
+            if not v_ok:
+                logger.warning("Motor start rejected by power meter: %s", v_err)
+                return False, f"Start rejected: {v_err}"
+
             # Contactor Pre-check: Welded Contact Guard (Part 2.8)
             has_fb_pin = (
                 system_config.head_end.contactor_feedback_pin is not None
@@ -102,6 +109,9 @@ class MotorController:
             self._started_at_iso = now_iso
             self._started_at_mono = get_monotonic_now()
             await state_manager.set_motor_state("RUNNING")
+
+            # Arm power meter for run
+            power_meter.on_motor_started()
 
             log_msg = f"Overhead pump started ({'MANUAL' if is_manual else 'AUTO'})."
             logger.info(log_msg)
@@ -165,19 +175,24 @@ class MotorController:
             state_manager._state["motor"]["last_stop_monotonic"] = get_monotonic_now()
 
             duration_s = 0
+            energy_kwh = 0.0
+            from app.hardware.power_meter import power_meter
             if was_running and self._started_at_mono:
                 duration_s = int(get_monotonic_now() - self._started_at_mono)
                 started_iso = self._started_at_iso or datetime.now(timezone.utc).isoformat()
-                await state_manager.log_run("motor.ac", started_iso, duration_s, reason)
+                energy_kwh = power_meter.on_motor_stopped(duration_s, reason)
+                await state_manager.log_run("motor.ac", started_iso, duration_s, reason, energy_kwh=energy_kwh)
                 self._started_at_mono = None
                 self._started_at_iso = None
 
-            log_msg = f"Overhead pump stopped (Reason: {reason}, Duration: {duration_s}s)."
+            log_msg = f"Overhead pump stopped (Reason: {reason}, Duration: {duration_s}s, Energy: {energy_kwh:.4f}kWh)."
             logger.info(log_msg)
-            await state_manager.log_event("MOTOR_STOP", "INFO", log_msg, {"reason": reason, "duration_s": duration_s})
-            await bus.publish("motor:stopped", {"reason": reason, "duration_s": duration_s})
+            await state_manager.log_event(
+                "MOTOR_STOP", "INFO", log_msg, {"reason": reason, "duration_s": duration_s, "energy_kwh": energy_kwh}
+            )
+            await bus.publish("motor:stopped", {"reason": reason, "duration_s": duration_s, "energy_kwh": energy_kwh})
 
-            return True, f"Motor de-energized. Ran for {duration_s}s."
+            return True, f"Motor de-energized. Ran for {duration_s}s ({energy_kwh:.4f} kWh)."
 
     async def evaluate_auto_replenishment(self) -> None:
         """

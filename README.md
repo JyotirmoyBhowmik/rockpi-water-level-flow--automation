@@ -113,7 +113,8 @@ The system reliably orchestrates:
 | **Pumps** | 12V Submersible Pumps | 4 | 12V DC Micro Submersible Drip Pumps (1.5A-2.0A operating, 2.5A peak per pump; max 2 concurrent pumps capped by firmware = 5.0A DC bus) | $14.00 | Precision irrigation delivery |
 | **RTC** | DS3231 I2C RTC | 1 | Precision TCXO RTC Module + CR2032 Battery | $2.50 | Monotonic time during internet loss |
 | **Audio** | USB Audio DAC | 1 | CM108 USB Audio Adapter + Powered Speaker | $4.50 | Synthesized voice alerts (espeak-ng) |
-| **Total** | - | - | - | **~$90.00** | Complete Industrial Automation |
+| **Power Meter (Optional)** | PZEM-004T v3 or SCT-013 CT | 1 | PZEM-004T v3 Modbus RTU (USB-TTL) or SCT-013-030 CT clamp. Provides dry-run loss-of-prime shutoff, overload trip, voltage window checking, kWh logging, and 5-run baseline learning. Does NOT replace thermal overload relay. | $8.00 | Supplementary motor current & power protection |
+| **Total** | - | - | - | **~$98.00** | Complete Industrial Automation |
 
 ---
 

@@ -67,6 +67,13 @@ Two taps feed optocoupler inputs `IN3` (`interlock_mid`) and `IN2` (`interlock_o
 5. **Motor Electrical Sizing & Overload Protection:**
    - A qualified electrician must size the circuit breaker (MCB), supply cabling, and motor overload protection relay strictly from the pump motor nameplate Full Load Current (FLC).
    - The AC contactor switching contacts must be sized for inductive motor starting duty (AC-3 rating >= motor FLC).
+6. **Optional AC Power & Motor Current Monitoring:**
+   - **Dry-Run / Loss of Prime:** If motor current drops below `dry_run_current_pct` (default 65%) of learned baseline for > `dry_run_timeout_s` (default 5.0s), the contactor is shut off and locked out (`DRY_RUN_CURRENT`).
+   - **Overload / Locked-Rotor:** If motor current exceeds `overload_current_pct` (default 135%) of learned baseline for > `overload_timeout_s` (default 3.0s), the contactor is shut off and locked out (`MOTOR_OVERLOAD_CURRENT`).
+   - **Single-Phase AC Voltage Window:** Mains voltage is checked before starting and while running against a configurable safe operating window (`180V - 260V`). Out-of-window voltage trips and locks out the motor (`VOLTAGE_OUT_OF_BOUNDS`).
+   - **Inrush Blanking Window:** Current evaluations are blanked during the first `inrush_blanking_s` (default 3.0s) to prevent false trips during induction motor starting inrush.
+   - **Automated Baseline Learning:** Automatically learns healthy steady-state baseline current over the first 5 healthy completed runs (>=30s, normal stop), persisted to SQLite.
+   - **CRITICAL SAFETY NOTICE:** Software current monitoring provides supplementary dry-run and locked-rotor protection. It **NEVER replaces the physical bimetallic/electronic thermal overload relay or MPCB** required by electrical wiring codes.
 
 ---
 

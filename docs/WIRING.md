@@ -149,6 +149,26 @@ Rock Pi S GND ----------------------------------+
 
 ---
 
+### 2.7 Motor Power & AC Current Monitoring (PZEM-004T v3 & SCT-013 CT)
+> [!IMPORTANT]
+> **SAFETY NOTICE:** Software AC current monitoring provides supplementary automated dry-run (loss-of-prime) and locked-rotor protection. It **NEVER replaces the physical bimetallic/electronic thermal overload relay or MPCB** required by electrical wiring codes.
+
+#### Option A: PZEM-004T v3 (Modbus RTU over USB-TTL)
+- **Interface:** USB-TTL UART adapter connected to ROCK Pi S USB port (udev symlink `/dev/pzem`, 9600 baud, 8N1).
+- **Wiring:**
+  - `5V` -> USB-TTL 5V
+  - `GND` -> USB-TTL GND
+  - `RX` -> USB-TTL TX
+  - `TX` -> USB-TTL RX
+  - **High-Voltage Side:** Live & Neutral terminals connected to AC mains input (230V AC); motor supply line wire passes through the onboard Current Transformer (CT) coil.
+- **Capabilities:** Measures RMS Voltage (0.1V), Current (0.001A), Active Power (0.1W), Cumulative Energy (1Wh -> kWh), Frequency (0.1Hz), and Power Factor (0.01).
+
+#### Option B: SCT-013 Current Transformer + ADS1115 ADC
+- **Interface:** SCT-013-030 (30A/1V) split-core CT clamped around the motor Live wire.
+- **Circuit:** Burden output connected to ADS1115 ADC channel (A0) on I2C bus 7 (`/dev/i2c-7`, address `0x48`) with a DC bias divider (3.3V / 2) to center the AC waveform within ADC input bounds.
+
+---
+
 ## 3. Wireless Garden Node Wiring (ESP32-C3 Super Mini)
 
 ### 3.1 ESP32-C3 Super Mini Pinout Reference

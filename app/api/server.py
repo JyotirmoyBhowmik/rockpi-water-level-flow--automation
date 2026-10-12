@@ -86,6 +86,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 4. Initialize Hardware (Outputs start forced OFF)
     await head_end_gpio.setup()
     await garden_gateway.start()
+    from app.hardware.power_meter import power_meter
+    try:
+        await power_meter.init()
+    except Exception as exc:
+        logger.warning("Power meter initialization error: %s", exc)
 
     # 5. Load user rules and start scheduler
     await rules_evaluator.load_rules_from_db()

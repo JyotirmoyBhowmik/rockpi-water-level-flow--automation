@@ -125,6 +125,21 @@ class StateManager:
                     for i in range(1, 5)
                 },
             },
+            "power_meter": {
+                "available": False,
+                "sensor_type": "none",
+                "voltage_v": None,
+                "current_a": None,
+                "power_w": None,
+                "energy_kwh": None,
+                "frequency_hz": None,
+                "power_factor": None,
+                "baseline_current_a": None,
+                "learning_mode": False,
+                "learning_runs_completed": 0,
+                "last_run_energy_kwh": 0.0,
+                "last_update_ts": None,
+            },
             "alarms": {},
         }
 
@@ -142,6 +157,9 @@ class StateManager:
         state["head_end"]["contactor_relay"] = head_end_gpio.relay_state
         state["head_end"]["contactor_relay_known"] = head_end_gpio.relay_state_known
         state["head_end"]["last_commanded_relay_state"] = head_end_gpio.last_commanded_relay_state
+
+        from app.hardware.power_meter import power_meter
+        state["power_meter"] = power_meter.get_status_dict()
 
         if state["motor"]["state"] == "RUNNING" and self._state["motor"]["started_at_monotonic"]:
             run_sec = int(get_monotonic_now() - self._state["motor"]["started_at_monotonic"])
@@ -463,6 +481,12 @@ class StateManager:
             self._state["motor"]["auto_mode"] = enabled
             system_config.motor.auto_mode = enabled
 
+    async def update_power_meter(self, data: Dict[str, Any]) -> None:
+        """Updates live power meter state telemetry."""
+        async with self._lock:
+            self._state["power_meter"].update(data)
+            self._state["power_meter"]["last_update_ts"] = time.time()
+
     async def set_zone_cooldown(self, zone_key: str, until_epoch: float) -> None:
         async with self._lock:
             if zone_key in self._state["garden"]["zones"]:
@@ -588,10 +612,15 @@ class StateManager:
                     started_at TEXT NOT NULL,
                     ended_at TEXT NOT NULL,
                     duration_s INTEGER NOT NULL,
-                    end_reason TEXT NOT NULL
+                    end_reason TEXT NOT NULL,
+                    energy_kwh REAL DEFAULT 0.0
                 );
                 """
             )
+            try:
+                conn.execute("ALTER TABLE runs ADD COLUMN energy_kwh REAL DEFAULT 0.0;")
+            except sqlite3.OperationalError:
+                pass
 
             # 6. User Automation Rules Table
             conn.execute(
@@ -726,18 +755,25 @@ class StateManager:
 
         await asyncio.to_thread(_insert)
 
-    async def log_run(self, target: str, started_at_iso: str, duration_s: int, end_reason: str) -> None:
-        """Records completed actuator run in runs table."""
+    async def log_run(
+        self,
+        target: str,
+        started_at_iso: str,
+        duration_s: int,
+        end_reason: str,
+        energy_kwh: float = 0.0,
+    ) -> None:
+        """Records completed actuator run in runs table with energy consumption in kWh."""
         ended_at_iso = datetime.now(timezone.utc).isoformat()
 
         def _insert() -> None:
             with self._get_connection() as conn:
                 conn.execute(
                     """
-                    INSERT INTO runs (target, started_at, ended_at, duration_s, end_reason)
-                    VALUES (?, ?, ?, ?, ?);
+                    INSERT INTO runs (target, started_at, ended_at, duration_s, end_reason, energy_kwh)
+                    VALUES (?, ?, ?, ?, ?, ?);
                     """,
-                    (target, started_at_iso, ended_at_iso, duration_s, end_reason),
+                    (target, started_at_iso, ended_at_iso, duration_s, end_reason, energy_kwh),
                 )
                 conn.commit()
 

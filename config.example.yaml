@@ -61,6 +61,30 @@ motor:
   pull_in_timeout_ms: 1000         # Max milliseconds to wait for contactor pull-in
   drop_out_timeout_ms: 1000        # Max milliseconds to wait for contactor drop-out
 
+# Optional Motor Power & Current Monitoring (PZEM-004T v3 or SCT-013 CT via ADS1115)
+# SAFETY: Software current monitoring provides supplementary dry-run and locked-rotor
+# protection. It NEVER replaces the physical thermal overload relay or MPCB required by code.
+power_meter:
+  enabled: false                   # Enable AC power & current monitoring
+  sensor_type: "none"              # "none", "pzem004t", or "sct013_ads1115"
+  serial_port: "/dev/pzem"         # USB-TTL serial port for PZEM-004T v3 (udev symlink)
+  baud_rate: 9600                  # PZEM-004T v3 Modbus RTU baud rate
+  modbus_address: 1                # PZEM-004T v3 Modbus slave address (1-247)
+  i2c_bus: 7                       # I2C bus number for ADS1115 CT input (e.g. 7 on ROCK Pi S)
+  i2c_address: 0x48                # ADS1115 I2C address (0x48 - 0x4B)
+  ct_channel: 0                    # ADS1115 single-ended analog channel (0-3)
+  ct_ratio: 30.0                   # CT current clamp rating (e.g. 30.0 for SCT-013-030 30A/1V)
+  voltage_min_v: 180.0             # Minimum safe single-phase AC mains voltage
+  voltage_max_v: 260.0             # Maximum safe single-phase AC mains voltage
+  voltage_fault_hold_s: 3.0        # Continuous out-of-voltage window hold time before trip
+  dry_run_current_pct: 65.0        # Trip if current < X% of baseline (loss of prime / dry-running)
+  dry_run_timeout_s: 5.0           # Continuous dry-run hold time before contactor shut-off
+  overload_current_pct: 135.0      # Trip if current > Y% of baseline (locked-rotor / overload)
+  overload_timeout_s: 3.0          # Continuous overload hold time before contactor shut-off
+  inrush_blanking_s: 3.0           # Seconds to ignore current limits during motor starting inrush
+  learning_runs_required: 5        # Number of healthy runs (>=30s) required to establish baseline
+  baseline_current_a: null         # Optional manual baseline current in Amperes (null = auto-learn)
+
 # Plant Irrigation Zones (ESP32-C3 Wireless Node)
 zones:
   zone_1:

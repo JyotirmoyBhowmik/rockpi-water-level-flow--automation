@@ -88,6 +88,30 @@ motor:
   pull_in_timeout_ms: 1000         # Max milliseconds to wait for contactor pull-in
   drop_out_timeout_ms: 1000        # Max milliseconds to wait for contactor drop-out
 
+# Optional Motor Power & Current Monitoring (PZEM-004T v3 or SCT-013 CT via ADS1115)
+# SAFETY: Software current monitoring provides supplementary dry-run and locked-rotor
+# protection. It NEVER replaces the physical thermal overload relay or MPCB required by code.
+power_meter:
+  enabled: false                   # Enable AC power & current monitoring
+  sensor_type: "none"              # "none", "pzem004t", or "sct013_ads1115"
+  serial_port: "/dev/pzem"         # USB-TTL serial port for PZEM-004T v3 (udev symlink)
+  baud_rate: 9600                  # PZEM-004T v3 Modbus RTU baud rate
+  modbus_address: 1                # PZEM-004T v3 Modbus slave address (1-247)
+  i2c_bus: 7                       # I2C bus number for ADS1115 CT input (e.g. 7 on ROCK Pi S)
+  i2c_address: 0x48                # ADS1115 I2C address (0x48 - 0x4B)
+  ct_channel: 0                    # ADS1115 single-ended analog channel (0-3)
+  ct_ratio: 30.0                   # CT current clamp rating (e.g. 30.0 for SCT-013-030 30A/1V)
+  voltage_min_v: 180.0             # Minimum safe single-phase AC mains voltage
+  voltage_max_v: 260.0             # Maximum safe single-phase AC mains voltage
+  voltage_fault_hold_s: 3.0        # Continuous out-of-voltage window hold time before trip
+  dry_run_current_pct: 65.0        # Trip if current < X% of baseline (loss of prime / dry-running)
+  dry_run_timeout_s: 5.0           # Continuous dry-run hold time before contactor shut-off
+  overload_current_pct: 135.0      # Trip if current > Y% of baseline (locked-rotor / overload)
+  overload_timeout_s: 3.0          # Continuous overload hold time before contactor shut-off
+  inrush_blanking_s: 3.0           # Seconds to ignore current limits during motor starting inrush
+  learning_runs_required: 5        # Number of healthy runs (>=30s) required to establish baseline
+  baseline_current_a: null         # Optional manual baseline current in Amperes (null = auto-learn)
+
 # Wireless Garden Drip Zones (1-4)
 zones:
   zone_1:
@@ -221,6 +245,32 @@ Controls 230V AC overhead pump runtime ceilings, anti-short-cycling timers, cool
 | `pull_in_timeout_ms` | `int` | `1000` | >= 50, <= 5000 | Max milliseconds to wait for contactor pull-in |
 | `drop_out_timeout_ms` | `int` | `1000` | >= 50, <= 5000 | Max milliseconds to wait for contactor drop-out |
 
+### PowerMeterConfig (`power_meter`)
+
+Configures optional AC power, voltage, and current monitoring via PZEM-004T v3 (Modbus RTU) or SCT-013 CT clamp via ADS1115 ADC. Enforces dry-run loss-of-prime shutoff, locked-rotor overload trip, and single-phase voltage window safety.
+
+| Field | Type | Default | Constraints | Description |
+|---|---|---|---|---|
+| `enabled` | `bool` | `false` | - | Enable optional motor AC power monitoring (PZEM-004T v3 or SCT-013 CT) |
+| `sensor_type` | `Literal[none, pzem004t, sct013_ads1115]` | `none` | - | Power sensor interface: pzem004t (Modbus RTU) or sct013_ads1115 (CT clamp via ADS1115) |
+| `serial_port` | `str` | `/dev/pzem` | - | Serial device for PZEM-004T v3 (e.g. /dev/pzem or /dev/ttyUSB1) |
+| `baud_rate` | `int` | `9600` | - | PZEM-004T baud rate (default 9600) |
+| `modbus_address` | `int` | `1` | >= 1, <= 247 | PZEM-004T Modbus slave address (1-247, default 1) |
+| `i2c_bus` | `int` | `7` | - | I2C bus number for ADS1115 CT input (default 7 on Rock Pi S) |
+| `i2c_address` | `int` | `72` | - | I2C address for ADS1115 (default 0x48) |
+| `ct_channel` | `int` | `0` | >= 0, <= 3 | ADS1115 analog input channel for CT clamp (0-3) |
+| `ct_ratio` | `float` | `30.0` | >= 1.0, <= 100.0 | CT current rating for 1V RMS output, e.g. 30.0 for SCT-013-030 |
+| `voltage_min_v` | `float` | `180.0` | >= 100.0, <= 250.0 | Under-voltage cutoff threshold in Volts RMS (single-phase 230V window) |
+| `voltage_max_v` | `float` | `260.0` | >= 210.0, <= 300.0 | Over-voltage cutoff threshold in Volts RMS (single-phase 230V window) |
+| `voltage_fault_hold_s` | `float` | `3.0` | >= 0.5, <= 30.0 | Seconds voltage out-of-bounds must persist before tripping |
+| `dry_run_current_pct` | `float` | `65.0` | >= 10.0, <= 95.0 | Current below this % of learned baseline indicates dry run / unloaded impeller |
+| `dry_run_timeout_s` | `float` | `5.0` | >= 1.0, <= 30.0 | Seconds under-current must persist to trigger dry-run cutoff & lockout |
+| `overload_current_pct` | `float` | `135.0` | >= 105.0, <= 250.0 | Current above this % of learned baseline indicates overload or locked rotor |
+| `overload_timeout_s` | `float` | `3.0` | >= 0.5, <= 30.0 | Seconds over-current must persist to trigger overload cutoff & lockout |
+| `inrush_blanking_s` | `float` | `3.0` | >= 0.0, <= 10.0 | Seconds after contactor pull-in to blank current threshold evaluation for inrush |
+| `learning_runs_required` | `int` | `5` | >= 1, <= 20 | Number of healthy runs required to establish baseline current |
+| `baseline_current_a` | `Optional[float]` | `null` | >= 0.1, <= 100.0 | Manually configured or learned baseline current in Amperes |
+
 ### ZoneConfig (`zones.<zone_id>`)
 
 Per-zone irrigation settings: moisture threshold, pulse limits, cooldown periods, and flow verification.
@@ -314,3 +364,4 @@ Commissioning checklist tracking input checks, relay click tests, gateway pairin
 4. **Zone Pulse Cap:** `max_pulse_seconds` is strictly validated `<= 60s`. Automatic watering pulses exceeding 60s are rejected by schema.
 5. **Telemetry Staleness Locking:** When sensor telemetry exceeds its configured threshold, the controller disallows dependent automatic actuators.
 6. **Exclusive Watchdog Ownership:** The application exclusively manages `/dev/watchdog`. Do not enable `RuntimeWatchdogSec` in systemd system.conf.
+7. **Supplementary Motor Current Protection:** Software current monitoring detects dry-run (loss of prime) and locked rotor. It provides supplementary protection and **NEVER replaces the physical bimetallic/electronic thermal overload relay or MPCB** required by electrical codes.
