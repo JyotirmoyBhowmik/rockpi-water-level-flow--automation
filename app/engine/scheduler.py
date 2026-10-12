@@ -179,6 +179,8 @@ class SystemScheduler:
                     interlock_mid=inputs["interlock_mid"],
                     leak_detected=inputs["leak_sensor"],
                     hardware_available=head_end_gpio.is_hardware_available,
+                    raw=inputs.get("raw"),
+                    debounced=inputs.get("debounced"),
                 )
 
                 # 3. Check staleness

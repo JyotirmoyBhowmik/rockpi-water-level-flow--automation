@@ -7,7 +7,7 @@ import asyncio
 import logging
 import shutil
 import subprocess
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, status
 from app.config import save_config, system_config
@@ -90,22 +90,58 @@ async def get_gpioinfo_output() -> Dict[str, Any]:
     return {"status": "success", "output": out}
 
 
+class TestInputPolarityPayload(BaseModel):
+    tank_low_active_low: Optional[bool] = None
+    interlock_out_active_low: Optional[bool] = None
+    interlock_mid_active_low: Optional[bool] = None
+    leak_active_low: Optional[bool] = None
+    feedback_active_low: Optional[bool] = None
+
+
 @router.post("/setup/test-input")
-async def test_head_end_input() -> Dict[str, Any]:
+async def test_head_end_input(payload: Optional[TestInputPolarityPayload] = None) -> Dict[str, Any]:
     """
     Step 3 of Setup Wizard:
-    Reads physical PC817 opto inputs directly so user can physically toggle float switches
-    and watch the states change in real time.
+    Reads physical PC817 opto inputs directly and optionally updates polarities on-the-fly
+    so installer can flip polarity while physically moving each float.
     """
+    if payload:
+        changed = False
+        if payload.tank_low_active_low is not None:
+            system_config.head_end.tank_low_active_low = payload.tank_low_active_low
+            changed = True
+        if payload.interlock_out_active_low is not None:
+            system_config.head_end.interlock_out_active_low = payload.interlock_out_active_low
+            changed = True
+        if payload.interlock_mid_active_low is not None:
+            system_config.head_end.interlock_mid_active_low = payload.interlock_mid_active_low
+            changed = True
+        if payload.leak_active_low is not None:
+            system_config.head_end.leak_active_low = payload.leak_active_low
+            changed = True
+        if payload.feedback_active_low is not None:
+            system_config.head_end.feedback_active_low = payload.feedback_active_low
+            changed = True
+        if changed:
+            save_config(system_config)
+
     inputs = await head_end_gpio.read_head_end_inputs()
     if head_end_gpio.is_hardware_available:
         system_config.setup_checks.input_test = True
         save_config(system_config)
 
+    he_cfg = system_config.head_end
     return {
         "status": "success",
         "inputs": inputs,
         "hardware_ready": head_end_gpio.is_hardware_available,
+        "polarities": {
+            "tank_low_active_low": he_cfg.tank_low_active_low,
+            "interlock_out_active_low": he_cfg.interlock_out_active_low,
+            "interlock_mid_active_low": he_cfg.interlock_mid_active_low,
+            "leak_active_low": he_cfg.leak_active_low,
+            "feedback_active_low": he_cfg.feedback_active_low,
+        },
     }
 
 

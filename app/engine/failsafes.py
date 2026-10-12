@@ -227,7 +227,8 @@ class FailsafeSafetyEngine:
         state["manual_locked"] = False
         state["cooldown_until_ts"] = 0.0
 
-        # Clear in-memory alarms directly
+        # Clear in-memory alarms and reset latched wiring fault
+        state_manager.reset_wiring_fault()
         for k in ["motor_timeout", "contactor_mismatch", "head_end_input_lost"]:
             state_manager._state["alarms"].pop(k, None)
 

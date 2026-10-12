@@ -8,12 +8,116 @@ Enforces relay polarity safety rules at startup.
 
 import asyncio
 import logging
+import math
 import os
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from app.config import system_config
 from app.hardware.gpio_backend import GPIOBackend, create_gpio_backend
 
 logger = logging.getLogger("smart_water.gpio")
+
+
+def _decode(raw: Optional[int], active_low: bool) -> Optional[bool]:
+    """
+    Decodes physical GPIO line value (0 or 1) based on active_low polarity.
+    active_low=True (PC817 optocoupler): 0 (LOW) -> True (active/closed/energized), 1 (HIGH) -> False
+    active_low=False (active-high): 1 (HIGH) -> True (active/closed/energized), 0 (LOW) -> False
+    Returns None if raw is None.
+    """
+    if raw is None:
+        return None
+    return bool((raw == 0) if active_low else (raw == 1))
+
+
+class SoftwareDebouncer:
+    """
+    Poll-interval-aware software debouncer for discrete binary inputs.
+    A state change is only accepted after N consecutive identical samples.
+    N is calculated from debounce_ms and poll_interval_ms:
+      N = max(2, math.ceil(debounce_ms / poll_interval_ms))
+    Ensures that a 1-sample transient glitch never changes the debounced state.
+    """
+
+    def __init__(self, debounce_ms: int = 100, poll_interval_ms: int = 1000):
+        self.debounce_ms = debounce_ms
+        self.poll_interval_ms = poll_interval_ms
+        self._channels: Dict[str, Dict[str, Any]] = {}
+
+    def get_required_samples(
+        self,
+        debounce_ms: Optional[int] = None,
+        poll_interval_ms: Optional[int] = None,
+    ) -> int:
+        d_ms = debounce_ms if debounce_ms is not None else self.debounce_ms
+        p_ms = poll_interval_ms if poll_interval_ms is not None else self.poll_interval_ms
+        p_ms = max(1, p_ms)
+        return max(2, math.ceil(d_ms / p_ms))
+
+    def update(
+        self,
+        channel: str,
+        value: Optional[bool],
+        debounce_ms: Optional[int] = None,
+        poll_interval_ms: Optional[int] = None,
+    ) -> Optional[bool]:
+        """
+        Updates the channel with a new raw sample and returns the debounced state.
+        If value is None (unconfigured / disconnected), clears debounce state for that channel and returns None.
+        On first non-None sample for a channel, initializes debounced state to that value.
+        Subsequent changes require N consecutive identical samples to take effect.
+        """
+        if value is None:
+            self._channels.pop(channel, None)
+            return None
+
+        required_n = self.get_required_samples(debounce_ms, poll_interval_ms)
+
+        ch = self._channels.get(channel)
+        if ch is None or ch.get("debounced") is None:
+            # First sample: initialize immediately
+            self._channels[channel] = {
+                "debounced": value,
+                "candidate": value,
+                "count": 1,
+            }
+            return value
+
+        current_debounced = ch["debounced"]
+        candidate = ch["candidate"]
+        count = ch["count"]
+
+        if value == current_debounced:
+            # Value matches current debounced state: reset candidate tracking
+            ch["candidate"] = value
+            ch["count"] = 1
+            return current_debounced
+
+        # Value differs from current debounced state
+        if value == candidate:
+            count += 1
+            ch["count"] = count
+            if count >= required_n:
+                # Reached N consecutive samples: transition to new value!
+                ch["debounced"] = value
+                ch["count"] = 1
+                return value
+            else:
+                return current_debounced
+        else:
+            # Candidate changed before reaching N: reset counter for new candidate
+            ch["candidate"] = value
+            ch["count"] = 1
+            return current_debounced
+
+    def get_debounced(self, channel: str) -> Optional[bool]:
+        ch = self._channels.get(channel)
+        return ch["debounced"] if ch else None
+
+    def reset(self, channel: Optional[str] = None) -> None:
+        if channel:
+            self._channels.pop(channel, None)
+        else:
+            self._channels.clear()
 
 
 class HeadEndGPIODriver:
@@ -38,6 +142,7 @@ class HeadEndGPIODriver:
         self._feedback_pin: Optional[int] = None
         # Immutable startup polarity settings
         self._active_high: bool = True
+        self._debouncer = SoftwareDebouncer()
         self._lock = asyncio.Lock()
 
     @property
@@ -138,14 +243,15 @@ class HeadEndGPIODriver:
             self._hardware_available = False
             return False
 
-    async def read_head_end_inputs(self) -> Dict[str, Optional[bool]]:
+    async def read_head_end_inputs(self) -> Dict[str, Any]:
         """
         Reads opto inputs with a 1.0s timeout:
-          IN1 (tank_low_float): Active LOW -> True when float closed (water low)
-          IN2 (interlock_out): Active HIGH -> True when chain is closed
-          IN3 (interlock_mid): Active HIGH -> True when mid-tap is energized
-          IN4 (leak_sensor): Active LOW -> True when water bridges contacts
-        Returns dict of pin states (or None for unconfigured / unreadable).
+          IN1 (tank_low_float): decoded via cfg.tank_low_active_low
+          IN2 (interlock_out): decoded via cfg.interlock_out_active_low
+          IN3 (interlock_mid): decoded via cfg.interlock_mid_active_low
+          IN4 (leak_sensor): decoded via cfg.leak_active_low
+        Applies software debounce using cfg.debounce_ms.
+        Returns dict with debounced states, raw logical states, and physical raw levels.
         """
         if not self._hardware_available or not self._backend:
             return {
@@ -153,44 +259,72 @@ class HeadEndGPIODriver:
                 "interlock_out": None,
                 "interlock_mid": None,
                 "leak_sensor": None,
+                "tank_low": None,
+                "leak_detected": None,
+                "raw": {
+                    "tank_low_float": None,
+                    "interlock_out": None,
+                    "interlock_mid": None,
+                    "leak_sensor": None,
+                    "raw_levels": {},
+                },
+                "debounced": {
+                    "tank_low_float": None,
+                    "interlock_out": None,
+                    "interlock_mid": None,
+                    "leak_sensor": None,
+                },
             }
 
         cfg = system_config.head_end
 
         def _sync_read():
-            results = {}
-            # IN1: Tank Low (PC817 inverts active-low, closed=LOW)
-            if cfg.tank_low_float_pin is not None:
-                raw = self._backend.get_value(cfg.tank_low_float_pin)
-                results["tank_low_float"] = (raw == 0)
-            else:
-                results["tank_low_float"] = None
+            raw_levels: Dict[str, Optional[int]] = {}
+            raw_logical: Dict[str, Optional[bool]] = {}
 
-            # IN2: Interlock Out (Active HIGH = Chain closed)
-            if cfg.interlock_out_pin is not None:
-                raw = self._backend.get_value(cfg.interlock_out_pin)
-                results["interlock_out"] = (raw == 1)
-            else:
-                results["interlock_out"] = None
+            # Read raw pin levels and decode via per-input active_low configuration
+            for pin_name, pin_offset, active_low in [
+                ("tank_low_float", cfg.tank_low_float_pin, cfg.tank_low_active_low),
+                ("interlock_out", cfg.interlock_out_pin, cfg.interlock_out_active_low),
+                ("interlock_mid", cfg.interlock_mid_pin, cfg.interlock_mid_active_low),
+                ("leak_sensor", cfg.leak_sensor_pin, cfg.leak_active_low),
+            ]:
+                if pin_offset is not None:
+                    raw_val = self._backend.get_value(pin_offset)
+                    raw_levels[pin_name] = raw_val
+                    raw_logical[pin_name] = _decode(raw_val, active_low)
+                else:
+                    raw_levels[pin_name] = None
+                    raw_logical[pin_name] = None
 
-            # IN3: Interlock Mid (Active HIGH)
-            if cfg.interlock_mid_pin is not None:
-                raw = self._backend.get_value(cfg.interlock_mid_pin)
-                results["interlock_mid"] = (raw == 1)
-            else:
-                results["interlock_mid"] = None
-
-            # IN4: Leak Sensor (Active LOW = Moisture detected)
-            if cfg.leak_sensor_pin is not None:
-                raw = self._backend.get_value(cfg.leak_sensor_pin)
-                results["leak_sensor"] = (raw == 0)
-            else:
-                results["leak_sensor"] = None
-
-            return results
+            return raw_levels, raw_logical
 
         try:
-            return await asyncio.wait_for(asyncio.to_thread(_sync_read), timeout=1.0)
+            raw_levels, raw_logical = await asyncio.wait_for(asyncio.to_thread(_sync_read), timeout=1.0)
+
+            # Apply software debouncing
+            debounced: Dict[str, Optional[bool]] = {}
+            for name, val in raw_logical.items():
+                debounced[name] = self._debouncer.update(
+                    channel=name,
+                    value=val,
+                    debounce_ms=cfg.debounce_ms,
+                    poll_interval_ms=1000,
+                )
+
+            return {
+                "tank_low_float": debounced["tank_low_float"],
+                "interlock_out": debounced["interlock_out"],
+                "interlock_mid": debounced["interlock_mid"],
+                "leak_sensor": debounced["leak_sensor"],
+                "tank_low": debounced["tank_low_float"],
+                "leak_detected": debounced["leak_sensor"],
+                "raw": {
+                    **raw_logical,
+                    "raw_levels": raw_levels,
+                },
+                "debounced": debounced,
+            }
         except (asyncio.TimeoutError, Exception) as e:
             logger.error("Error reading head-end GPIO inputs: %s", e)
             return {
@@ -198,6 +332,21 @@ class HeadEndGPIODriver:
                 "interlock_out": None,
                 "interlock_mid": None,
                 "leak_sensor": None,
+                "tank_low": None,
+                "leak_detected": None,
+                "raw": {
+                    "tank_low_float": None,
+                    "interlock_out": None,
+                    "interlock_mid": None,
+                    "leak_sensor": None,
+                    "raw_levels": {},
+                },
+                "debounced": {
+                    "tank_low_float": None,
+                    "interlock_out": None,
+                    "interlock_mid": None,
+                    "leak_sensor": None,
+                },
             }
 
     async def read_contactor_feedback(self) -> Optional[bool]:
@@ -205,10 +354,11 @@ class HeadEndGPIODriver:
         if not self._hardware_available or not self._backend or self._feedback_pin is None:
             return None
 
+        cfg = system_config.head_end
+
         def _sync_read_fb():
             raw = self._backend.get_value(self._feedback_pin)
-            # Active LOW when auxiliary contact closed (closed = energized)
-            return raw == 0
+            return _decode(raw, cfg.feedback_active_low)
 
         try:
             return await asyncio.wait_for(asyncio.to_thread(_sync_read_fb), timeout=1.0)
@@ -266,6 +416,7 @@ class HeadEndGPIODriver:
     async def cleanup(self) -> None:
         """Releases GPIO handles and shuts off outputs."""
         await self.force_all_outputs_off()
+        self._debouncer.reset()
         if self._backend:
             try:
                 self._backend.close()

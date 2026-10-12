@@ -69,6 +69,11 @@ class HeadEndConfig(BaseModel):
     relay_idle_bias_confirmed: Optional[str] = Field(default=None, description="Must be 'pull_up' if active-low used")
     contactor_feedback_pin: Optional[int] = Field(default=None, description="Optional: Contactor aux contact feedback")
     debounce_ms: int = Field(default=100, ge=10, le=1000, description="Debounce filtering in milliseconds")
+    tank_low_active_low: bool = Field(default=True, description="IN1: Tank low float switch active-low (PC817)")
+    interlock_out_active_low: bool = Field(default=True, description="IN2: Interlock chain closed active-low (PC817)")
+    interlock_mid_active_low: bool = Field(default=True, description="IN3: Interlock mid-tap active-low (PC817)")
+    leak_active_low: bool = Field(default=True, description="IN4: Leak sensor active-low (PC817)")
+    feedback_active_low: bool = Field(default=True, description="Auxiliary contact feedback active-low (PC817)")
 
     @field_validator("relay_idle_bias_confirmed")
     @classmethod
@@ -373,6 +378,11 @@ _STARTUP_PIN_SIGNATURE = (
     system_config.head_end.contactor_relay_active_high,
     system_config.head_end.relay_idle_bias_confirmed,
     system_config.head_end.contactor_feedback_pin,
+    system_config.head_end.tank_low_active_low,
+    system_config.head_end.interlock_out_active_low,
+    system_config.head_end.interlock_mid_active_low,
+    system_config.head_end.leak_active_low,
+    system_config.head_end.feedback_active_low,
 )
 
 
@@ -388,5 +398,10 @@ def check_if_restart_required(updated_head_end: HeadEndConfig) -> bool:
         updated_head_end.contactor_relay_active_high,
         updated_head_end.relay_idle_bias_confirmed,
         updated_head_end.contactor_feedback_pin,
+        updated_head_end.tank_low_active_low,
+        updated_head_end.interlock_out_active_low,
+        updated_head_end.interlock_mid_active_low,
+        updated_head_end.leak_active_low,
+        updated_head_end.feedback_active_low,
     )
     return new_sig != _STARTUP_PIN_SIGNATURE

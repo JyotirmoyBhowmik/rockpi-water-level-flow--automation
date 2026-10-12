@@ -21,7 +21,17 @@ from app.config import system_config
 from app.core.state_manager import state_manager
 from app.engine.failsafes import failsafe_engine
 from app.engine.plant_controller import PlantIrrigationController
+from app.hardware.gpio_driver import _decode, SoftwareDebouncer
 from app.hardware.rtc import get_monotonic_now
+
+
+@pytest.fixture(autouse=True)
+def reset_failsafe_state():
+    state_manager.reset_wiring_fault()
+    failsafe_engine.reset_motor_lockout()
+    yield
+    state_manager.reset_wiring_fault()
+    failsafe_engine.reset_motor_lockout()
 
 
 # -----------------------------------------------------------------------------
@@ -57,6 +67,137 @@ async def test_interlock_truth_table():
     )
     st = state_manager.get_state()["head_end"]
     assert st["interlock_cause"] == "wiring_fault"
+    state_manager.reset_wiring_fault()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "active_low,raw_out,raw_mid,expected_out,expected_mid,expected_cause",
+    [
+        # active_low=True (PC817 default: 0 is active/closed, 1 is open)
+        (True, 0, 0, True, True, "healthy"),
+        (True, 1, 1, False, False, "tank_full"),
+        (True, 1, 0, False, True, "dry_sump"),
+        (True, 0, 1, True, False, "wiring_fault"),
+        # active_low=False (Active HIGH: 1 is active/closed, 0 is open)
+        (False, 1, 1, True, True, "healthy"),
+        (False, 0, 0, False, False, "tank_full"),
+        (False, 0, 1, False, True, "dry_sump"),
+        (False, 1, 0, True, False, "wiring_fault"),
+    ],
+)
+async def test_interlock_truth_table_parametric_polarity(
+    active_low, raw_out, raw_mid, expected_out, expected_mid, expected_cause
+):
+    """
+    Parametric test verifying all 4 truth-table rows across both polarity settings.
+    Decodes raw GPIO line levels using _decode(raw, active_low) and asserts correct cause.
+    """
+    state_manager.reset_wiring_fault()
+    dec_out = _decode(raw_out, active_low)
+    dec_mid = _decode(raw_mid, active_low)
+
+    assert dec_out == expected_out
+    assert dec_mid == expected_mid
+
+    await state_manager.update_head_end(
+        tank_low=False,
+        interlock_out=dec_out,
+        interlock_mid=dec_mid,
+        leak_detected=False,
+        hardware_available=True,
+    )
+    st = state_manager.get_state()["head_end"]
+    assert st["interlock_cause"] == expected_cause
+    state_manager.reset_wiring_fault()
+
+
+def test_software_debouncer_glitch_rejection_and_transition():
+    """
+    Verifies that a 1-sample glitch does NOT change debounced state,
+    and only N consecutive identical samples trigger a transition.
+    """
+    # debounce_ms = 100, poll_interval_ms = 100 -> required_n = max(2, ceil(100/100)) = 2
+    debouncer = SoftwareDebouncer(debounce_ms=100, poll_interval_ms=100)
+    assert debouncer.get_required_samples(100, 100) == 2
+
+    # 1. First sample initializes the channel immediately
+    assert debouncer.update("interlock_out", False) is False
+    assert debouncer.get_debounced("interlock_out") is False
+
+    # 2. 1-sample transient glitch (True for 1 sample) MUST NOT change debounced state
+    res_glitch = debouncer.update("interlock_out", True)
+    assert res_glitch is False
+    assert debouncer.get_debounced("interlock_out") is False
+
+    # 3. Input returns to False (glitch ended) -> state remains False
+    res_stable = debouncer.update("interlock_out", False)
+    assert res_stable is False
+    assert debouncer.get_debounced("interlock_out") is False
+
+    # 4. Sustained transition: sample 1 of True (count = 1, required = 2)
+    assert debouncer.update("interlock_out", True) is False
+    # Sample 2 of True (count = 2 >= required) -> debounced state transitions to True!
+    assert debouncer.update("interlock_out", True) is True
+    assert debouncer.get_debounced("interlock_out") is True
+
+    # 5. Another 1-sample glitch in the opposite direction (False for 1 sample)
+    assert debouncer.update("interlock_out", False) is True
+    assert debouncer.get_debounced("interlock_out") is True
+
+    # Glitch recovers to True
+    assert debouncer.update("interlock_out", True) is True
+    assert debouncer.get_debounced("interlock_out") is True
+
+
+@pytest.mark.asyncio
+async def test_wiring_fault_latches_until_manual_reset():
+    """
+    Verifies that impossible wiring fault (interlock_out=True, interlock_mid=False)
+    latches indefinitely even when physical inputs return to healthy,
+    and only clears upon manual operator reset.
+    """
+    state_manager.reset_wiring_fault()
+
+    # Step 1: Healthy initial state
+    await state_manager.update_head_end(
+        tank_low=False, interlock_out=True, interlock_mid=True, leak_detected=False, hardware_available=True
+    )
+    st = state_manager.get_state()["head_end"]
+    assert st["interlock_cause"] == "healthy"
+    assert st["wiring_fault_latched"] is False
+
+    # Step 2: Trip impossible wiring fault
+    await state_manager.update_head_end(
+        tank_low=False, interlock_out=True, interlock_mid=False, leak_detected=False, hardware_available=True
+    )
+    await failsafe_engine.evaluate_head_end_safety()
+    st = state_manager.get_state()["head_end"]
+    assert st["interlock_cause"] == "wiring_fault"
+    assert st["wiring_fault_latched"] is True
+
+    # Step 3: Inputs return to healthy (interlock_out=True, interlock_mid=True)
+    # Because wiring_fault is latched, interlock_cause MUST REMAIN "wiring_fault"!
+    await state_manager.update_head_end(
+        tank_low=False, interlock_out=True, interlock_mid=True, leak_detected=False, hardware_available=True
+    )
+    st = state_manager.get_state()["head_end"]
+    assert st["interlock_cause"] == "wiring_fault"
+    assert st["wiring_fault_latched"] is True
+
+    # Step 4: Operator manually resets motor lockout
+    ok, err = failsafe_engine.reset_motor_lockout()
+    assert ok is True
+    assert err is None
+    assert state_manager.get_state()["head_end"]["wiring_fault_latched"] is False
+
+    # Step 5: Now next update with healthy inputs transitions back to healthy
+    await state_manager.update_head_end(
+        tank_low=False, interlock_out=True, interlock_mid=True, leak_detected=False, hardware_available=True
+    )
+    st = state_manager.get_state()["head_end"]
+    assert st["interlock_cause"] == "healthy"
+    assert st["wiring_fault_latched"] is False
 
 
 # -----------------------------------------------------------------------------

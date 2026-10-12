@@ -616,24 +616,44 @@
         <div class="wizard-step" id="wstep-3">
           <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">Step 3: Test Float Switches (Live Physical Toggle)</h3>
           <p style="font-size: 12px; color: #475569; margin-bottom: 12px;">
-            Physically raise and lower each float switch. Verify the indicators below change state immediately.
+            Physically raise and lower each float switch. Verify raw levels and decoded meanings change immediately. Flip polarity toggles if using Normally-Closed or active-high wiring.
           </p>
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-3" style="margin-bottom: 1rem;">
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3" style="margin-bottom: 1rem;">
             <div style="background:#f8fafc; padding:0.75rem; border-radius:0.5rem; border:1px solid #e2e8f0;">
-              <div style="font-size:11px; font-weight:700;">IN1: Tank Low</div>
+              <div style="font-size:11px; font-weight:700; color:#1e293b;">IN1: Tank Low Float</div>
+              <div style="font-size:11px; color:#64748b; margin-top:2px;">Raw Level: <strong id="wraw-in1">--</strong></div>
               <div id="wtest-in1" style="font-size:12px; margin-top:4px;">Waiting...</div>
+              <label style="font-size:11px; display:flex; align-items:center; gap:6px; margin-top:8px; cursor:pointer; color:#334155;">
+                <input type="checkbox" id="wpol-in1" onchange="flipWizardPolarity('tank_low_active_low', this.checked)">
+                <span>Active-Low (PC817)</span>
+              </label>
             </div>
             <div style="background:#f8fafc; padding:0.75rem; border-radius:0.5rem; border:1px solid #e2e8f0;">
-              <div style="font-size:11px; font-weight:700;">IN2: Interlock Out</div>
+              <div style="font-size:11px; font-weight:700; color:#1e293b;">IN2: Interlock Out</div>
+              <div style="font-size:11px; color:#64748b; margin-top:2px;">Raw Level: <strong id="wraw-in2">--</strong></div>
               <div id="wtest-in2" style="font-size:12px; margin-top:4px;">Waiting...</div>
+              <label style="font-size:11px; display:flex; align-items:center; gap:6px; margin-top:8px; cursor:pointer; color:#334155;">
+                <input type="checkbox" id="wpol-in2" onchange="flipWizardPolarity('interlock_out_active_low', this.checked)">
+                <span>Active-Low (PC817)</span>
+              </label>
             </div>
             <div style="background:#f8fafc; padding:0.75rem; border-radius:0.5rem; border:1px solid #e2e8f0;">
-              <div style="font-size:11px; font-weight:700;">IN3: Interlock Mid</div>
+              <div style="font-size:11px; font-weight:700; color:#1e293b;">IN3: Interlock Mid</div>
+              <div style="font-size:11px; color:#64748b; margin-top:2px;">Raw Level: <strong id="wraw-in3">--</strong></div>
               <div id="wtest-in3" style="font-size:12px; margin-top:4px;">Waiting...</div>
+              <label style="font-size:11px; display:flex; align-items:center; gap:6px; margin-top:8px; cursor:pointer; color:#334155;">
+                <input type="checkbox" id="wpol-in3" onchange="flipWizardPolarity('interlock_mid_active_low', this.checked)">
+                <span>Active-Low (PC817)</span>
+              </label>
             </div>
             <div style="background:#f8fafc; padding:0.75rem; border-radius:0.5rem; border:1px solid #e2e8f0;">
-              <div style="font-size:11px; font-weight:700;">IN4: Leak Sensor</div>
+              <div style="font-size:11px; font-weight:700; color:#1e293b;">IN4: Leak Sensor</div>
+              <div style="font-size:11px; color:#64748b; margin-top:2px;">Raw Level: <strong id="wraw-in4">--</strong></div>
               <div id="wtest-in4" style="font-size:12px; margin-top:4px;">Waiting...</div>
+              <label style="font-size:11px; display:flex; align-items:center; gap:6px; margin-top:8px; cursor:pointer; color:#334155;">
+                <input type="checkbox" id="wpol-in4" onchange="flipWizardPolarity('leak_active_low', this.checked)">
+                <span>Active-Low (PC817)</span>
+              </label>
             </div>
           </div>
           <button class="btn btn-secondary" onclick="pollWizardInputs()">Refresh Live Inputs</button>
@@ -1033,16 +1053,74 @@
       }
     }
 
-    async function pollWizardInputs() {
+    async function pollWizardInputs(updatePayload = null) {
       try {
-        const res = await fetch("/api/setup/test-input", { method: "POST", headers: getAuthHeaders() });
+        const opts = { method: "POST", headers: getAuthHeaders() };
+        if (updatePayload) {
+          opts.headers["Content-Type"] = "application/json";
+          opts.body = JSON.stringify(updatePayload);
+        }
+        const res = await fetch("/api/setup/test-input", opts);
         const data = await res.json();
         const inputs = data.inputs || {};
-        document.getElementById("wtest-in1").textContent = inputs.tank_low === null ? "Not configured" : (inputs.tank_low ? "LOW (Tripped)" : "Normal");
-        document.getElementById("wtest-in2").textContent = inputs.interlock_out === null ? "Not configured" : (inputs.interlock_out ? "HIGH (Closed)" : "LOW (Broken)");
-        document.getElementById("wtest-in3").textContent = inputs.interlock_mid === null ? "Not configured" : (inputs.interlock_mid ? "HIGH (Closed)" : "LOW (Open)");
-        document.getElementById("wtest-in4").textContent = inputs.leak_detected === null ? "Not configured" : (inputs.leak_detected ? "TRIPPED" : "Normal");
+        const raw = inputs.raw || {};
+        const rawLevels = raw.raw_levels || {};
+        const pols = data.polarities || {};
+
+        // IN1: Tank Low Float
+        const r1 = rawLevels.tank_low_float;
+        const d1 = inputs.tank_low_float !== undefined ? inputs.tank_low_float : inputs.tank_low;
+        const raw1El = document.getElementById("wraw-in1");
+        if (raw1El) raw1El.textContent = (r1 === null || r1 === undefined) ? "--" : (r1 === 0 ? "0 (LOW)" : "1 (HIGH)");
+        const test1El = document.getElementById("wtest-in1");
+        if (test1El) {
+          test1El.innerHTML = d1 === null ? '<span style="color:#94a3b8">Unconfigured</span>' : (d1 ? '<span style="color:#dc2626; font-weight:700;">TRIPPED (Water Low)</span>' : '<span style="color:#16a34a; font-weight:700;">NORMAL (Water OK)</span>');
+        }
+        const pol1El = document.getElementById("wpol-in1");
+        if (pol1El && pols.tank_low_active_low !== undefined) pol1El.checked = pols.tank_low_active_low;
+
+        // IN2: Interlock Out
+        const r2 = rawLevels.interlock_out;
+        const d2 = inputs.interlock_out;
+        const raw2El = document.getElementById("wraw-in2");
+        if (raw2El) raw2El.textContent = (r2 === null || r2 === undefined) ? "--" : (r2 === 0 ? "0 (LOW)" : "1 (HIGH)");
+        const test2El = document.getElementById("wtest-in2");
+        if (test2El) {
+          test2El.innerHTML = d2 === null ? '<span style="color:#94a3b8">Unconfigured</span>' : (d2 ? '<span style="color:#16a34a; font-weight:700;">CLOSED (Chain Healthy)</span>' : '<span style="color:#dc2626; font-weight:700;">OPEN (Chain Broken)</span>');
+        }
+        const pol2El = document.getElementById("wpol-in2");
+        if (pol2El && pols.interlock_out_active_low !== undefined) pol2El.checked = pols.interlock_out_active_low;
+
+        // IN3: Interlock Mid
+        const r3 = rawLevels.interlock_mid;
+        const d3 = inputs.interlock_mid;
+        const raw3El = document.getElementById("wraw-in3");
+        if (raw3El) raw3El.textContent = (r3 === null || r3 === undefined) ? "--" : (r3 === 0 ? "0 (LOW)" : "1 (HIGH)");
+        const test3El = document.getElementById("wtest-in3");
+        if (test3El) {
+          test3El.innerHTML = d3 === null ? '<span style="color:#94a3b8">Unconfigured</span>' : (d3 ? '<span style="color:#16a34a; font-weight:700;">CLOSED (Mid-tap OK)</span>' : '<span style="color:#dc2626; font-weight:700;">OPEN (Mid-tap Open)</span>');
+        }
+        const pol3El = document.getElementById("wpol-in3");
+        if (pol3El && pols.interlock_mid_active_low !== undefined) pol3El.checked = pols.interlock_mid_active_low;
+
+        // IN4: Leak Sensor
+        const r4 = rawLevels.leak_sensor;
+        const d4 = inputs.leak_sensor !== undefined ? inputs.leak_sensor : inputs.leak_detected;
+        const raw4El = document.getElementById("wraw-in4");
+        if (raw4El) raw4El.textContent = (r4 === null || r4 === undefined) ? "--" : (r4 === 0 ? "0 (LOW)" : "1 (HIGH)");
+        const test4El = document.getElementById("wtest-in4");
+        if (test4El) {
+          test4El.innerHTML = d4 === null ? '<span style="color:#94a3b8">Unconfigured</span>' : (d4 ? '<span style="color:#dc2626; font-weight:700;">ALARM (Leak Detected)</span>' : '<span style="color:#16a34a; font-weight:700;">NORMAL (Dry)</span>');
+        }
+        const pol4El = document.getElementById("wpol-in4");
+        if (pol4El && pols.leak_active_low !== undefined) pol4El.checked = pols.leak_active_low;
       } catch (e) { console.error(e); }
+    }
+
+    async function flipWizardPolarity(field, val) {
+      const payload = {};
+      payload[field] = val;
+      await pollWizardInputs(payload);
     }
 
     async function testRelayCycle() {

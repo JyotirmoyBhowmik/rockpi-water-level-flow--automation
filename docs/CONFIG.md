@@ -22,7 +22,13 @@ head_end:
   leak_sensor_pin: null            # IN4: Line offset for Leak sensor (Active LOW)
   contactor_relay_pin: null        # Output: Line offset for 25A AC contactor driver
   contactor_relay_active_high: true # true if HIGH energizes relay, false if LOW
+  contactor_feedback_pin: null     # Optional: Auxiliary contact feedback line offset
   debounce_ms: 100                 # Hardware debounce filtering (10 - 1000 ms)
+  tank_low_active_low: true        # IN1: true = LOW when float closed (PC817 open-collector)
+  interlock_out_active_low: true   # IN2: true = LOW when chain energized (PC817 open-collector)
+  interlock_mid_active_low: true   # IN3: true = LOW when mid-tap energized (PC817 open-collector)
+  leak_active_low: true            # IN4: true = LOW when leak detected (PC817 open-collector)
+  feedback_active_low: true        # Aux: true = LOW when aux contact closed (PC817 open-collector)
 
 # Wireless Garden ESP32-C3 USB Gateway Serial Link
 garden_gateway:

@@ -148,12 +148,12 @@ GPIO1_C0/Relay(15) | [15] [16] | (16) GPIO1_C1 (Contactor Aux Feedback)
 | **3.3V VCC** | Pin 1 | 3V3 | PC817 Collector Pull-up Rail | 3.3V DC |
 | **I2C7 SDA** | Pin 3 | GPIO1_B0 | DS3231 RTC SDA | 3.3V DC (Pull-up) |
 | **I2C7 SCL** | Pin 5 | GPIO1_B1 | DS3231 RTC SCL | 3.3V DC (Pull-up) |
-| **IN1 (Tank Low)** | Pin 7 | GPIO1_B2 | PC817 Opto Output 1 | Active LOW (Pull-up) |
-| **IN2 (Interlock Out)** | Pin 9 | GPIO1_B3 | PC817 Opto Output 2 | Active HIGH |
-| **IN3 (Interlock Mid)** | Pin 11 | GPIO1_B4 | PC817 Opto Output 3 | Active HIGH |
-| **IN4 (Leak Sensor)** | Pin 12 | GPIO1_B5 | PC817 Opto Output 4 | Active HIGH (Leak = HIGH) |
-| **Pilot Relay Out** | Pin 15 | GPIO1_C0 | Pilot Relay IN (Triggers Contactor Coil) | Active HIGH |
-| **Contactor Aux In** | Pin 16 | GPIO1_C1 | Contactor NO Auxiliary Contact (via Opto) | Active HIGH |
+| **IN1 (Tank Low)** | Pin 7 | GPIO1_B2 | PC817 Opto Output 1 | Configurable (Active LOW default) |
+| **IN2 (Interlock Out)** | Pin 9 | GPIO1_B3 | PC817 Opto Output 2 | Configurable (Active LOW default / PC817 open-collector) |
+| **IN3 (Interlock Mid)** | Pin 11 | GPIO1_B4 | PC817 Opto Output 3 | Configurable (Active LOW default / PC817 open-collector) |
+| **IN4 (Leak Sensor)** | Pin 12 | GPIO1_B5 | PC817 Opto Output 4 | Configurable (Active LOW default) |
+| **Pilot Relay Out** | Pin 15 | GPIO1_C0 | Pilot Relay IN (Triggers Contactor Coil) | Active HIGH (unless confirmed pull-up) |
+| **Contactor Aux In** | Pin 16 | GPIO1_C1 | Contactor NO Auxiliary Contact (via Opto) | Configurable (Active LOW default) |
 | **GND** | Pin 6, 14 | GND | Common Digital Ground | 0V |
 
 ---

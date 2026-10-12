@@ -50,6 +50,7 @@ class StateManager:
         self.db_path = Path(db_path or (DATA_DIR / "system.db"))
         self._lock = asyncio.Lock()
         self._start_monotonic = get_monotonic_now()
+        self._wiring_fault_latched: bool = False
 
         # In-Memory Live State (Zero seeded numbers)
         self._state: Dict[str, Any] = {
@@ -61,14 +62,28 @@ class StateManager:
                 "configured": False,
                 "last_update_ts": None,
                 "is_stale": True,
-                "tank_low_float": None,       # None = No reading yet
+                "tank_low_float": None,       # None = No reading yet (debounced logical)
                 "interlock_out": None,
                 "interlock_mid": None,
                 "leak_detected": None,
+                "raw": {
+                    "tank_low_float": None,
+                    "interlock_out": None,
+                    "interlock_mid": None,
+                    "leak_sensor": None,
+                    "raw_levels": {},
+                },
+                "debounced": {
+                    "tank_low_float": None,
+                    "interlock_out": None,
+                    "interlock_mid": None,
+                    "leak_sensor": None,
+                },
                 "interlock_cause": "unconfigured",
                 "contactor_relay": False,
                 "contactor_feedback": None,
                 "healthy_debounce_count": 0,  # Consecutive healthy cycles
+                "wiring_fault_latched": False,
             },
             "motor": {
                 "state": "OFF",              # OFF | RUNNING | COOLDOWN_LOCKED | MANUAL_LOCKED
@@ -131,6 +146,13 @@ class StateManager:
     # Head-End State Updates & Cause Logic
     # -------------------------------------------------------------------------
 
+    def reset_wiring_fault(self) -> None:
+        """Clears latched wiring fault state."""
+        self._wiring_fault_latched = False
+        if "head_end" in self._state:
+            self._state["head_end"]["wiring_fault_latched"] = False
+        self._state["alarms"].pop("wiring_fault", None)
+
     async def update_head_end(
         self,
         tank_low: Optional[bool],
@@ -139,13 +161,15 @@ class StateManager:
         leak_detected: Optional[bool],
         hardware_available: bool,
         contactor_feedback: Optional[bool] = None,
+        raw: Optional[Dict[str, Any]] = None,
+        debounced: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Updates hardwired head-end inputs and computes hardware interlock cause logic:
           - interlock_out HIGH & interlock_mid HIGH = healthy
           - interlock_out LOW & interlock_mid LOW   = Full float tripped (tank full / wire cut)
           - interlock_out LOW & interlock_mid HIGH  = Sump float open (dry sump)
-          - interlock_out HIGH & interlock_mid LOW  = impossible -> WIRING FAULT
+          - interlock_out HIGH & interlock_mid LOW  = impossible -> WIRING FAULT (latches until manual reset)
         """
         async with self._lock:
             now = time.time()
@@ -153,6 +177,32 @@ class StateManager:
             he["configured"] = hardware_available
             self._state["hardware_ready"] = hardware_available
             he["contactor_feedback"] = contactor_feedback
+
+            # If debounced dict passed, use debounced logical values
+            if debounced:
+                tank_low = debounced.get("tank_low_float", debounced.get("tank_low", tank_low))
+                interlock_out = debounced.get("interlock_out", interlock_out)
+                interlock_mid = debounced.get("interlock_mid", interlock_mid)
+                leak_detected = debounced.get("leak_sensor", debounced.get("leak_detected", leak_detected))
+            else:
+                debounced = {
+                    "tank_low_float": tank_low,
+                    "interlock_out": interlock_out,
+                    "interlock_mid": interlock_mid,
+                    "leak_sensor": leak_detected,
+                }
+
+            if raw is None:
+                raw = {
+                    "tank_low_float": tank_low,
+                    "interlock_out": interlock_out,
+                    "interlock_mid": interlock_mid,
+                    "leak_sensor": leak_detected,
+                    "raw_levels": {},
+                }
+
+            he["raw"] = raw
+            he["debounced"] = debounced
 
             if not hardware_available or interlock_out is None or interlock_mid is None:
                 he["tank_low_float"] = None
@@ -172,8 +222,17 @@ class StateManager:
             he["interlock_mid"] = interlock_mid
             he["leak_detected"] = leak_detected
 
-            # Cause logic evaluation
-            if interlock_out is True and interlock_mid is True:
+            # Latch wiring fault if impossible state occurs
+            if interlock_out is True and interlock_mid is False:
+                self._wiring_fault_latched = True
+
+            he["wiring_fault_latched"] = self._wiring_fault_latched
+
+            # Cause logic evaluation (derived from debounced values)
+            if self._wiring_fault_latched:
+                he["interlock_cause"] = "wiring_fault"
+                he["healthy_debounce_count"] = 0
+            elif interlock_out is True and interlock_mid is True:
                 he["interlock_cause"] = "healthy"
                 he["healthy_debounce_count"] += 1
             elif interlock_out is False and interlock_mid is False:
@@ -181,9 +240,6 @@ class StateManager:
                 he["healthy_debounce_count"] = 0
             elif interlock_out is False and interlock_mid is True:
                 he["interlock_cause"] = "dry_sump"
-                he["healthy_debounce_count"] = 0
-            elif interlock_out is True and interlock_mid is False:
-                he["interlock_cause"] = "wiring_fault"
                 he["healthy_debounce_count"] = 0
             else:
                 he["interlock_cause"] = "unconfigured"

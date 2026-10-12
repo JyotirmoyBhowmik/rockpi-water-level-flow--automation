@@ -39,11 +39,12 @@ The Radxa ROCK Pi S exposes 26-pin Header 1 and 26-pin Header 2 (0.1" pitch). Al
 | **Ground** | GND | Pin 6 (H1) | - | Common DC Ground |
 | **I2C7 SDA** | I2C7_SDA | Pin 3 (H1) | GPIO1_C2 (Line 50) | DS3231 RTC & Optional SSD1306 OLED |
 | **I2C7 SCL** | I2C7_SCL | Pin 5 (H1) | GPIO1_C3 (Line 51) | DS3231 RTC & Optional SSD1306 OLED |
-| **PC817 IN1** | IN1_GPIO | Header 1 | Configurable in YAML | Tank Low Float (Active LOW) |
-| **PC817 IN2** | IN2_GPIO | Header 1 | Configurable in YAML | Interlock Chain Closed (HIGH = Motor OK) |
-| **PC817 IN3** | IN3_GPIO | Header 1 | Configurable in YAML | Interlock Mid-Point (Between Full & Sump) |
-| **PC817 IN4** | IN4_GPIO | Header 1 | Configurable in YAML | Leak Detection Sensor (Active LOW) |
+| **PC817 IN1** | IN1_GPIO | Header 1 | Configurable in YAML | Tank Low Float (Active LOW default, configurable) |
+| **PC817 IN2** | IN2_GPIO | Header 1 | Configurable in YAML | Interlock Chain Closed (Active LOW default / PC817 open-collector) |
+| **PC817 IN3** | IN3_GPIO | Header 1 | Configurable in YAML | Interlock Mid-Point (Active LOW default / PC817 open-collector) |
+| **PC817 IN4** | IN4_GPIO | Header 1 | Configurable in YAML | Leak Detection Sensor (Active LOW default, configurable) |
 | **Contactor Out** | RELAY_GPIO | Header 1 | Configurable in YAML | 25A Contactor Driver Output |
+| **Contactor Aux** | AUX_FB_GPIO | Header 1 | Configurable in YAML | Contactor Feedback (Active LOW default via PC817) |
 
 ---
 
@@ -67,11 +68,13 @@ External 5V Float Domain                   Rock Pi S 3.3V Logic Domain
 Ground (Float Domain) ---------------+-------- Emitter   ----> Rock Pi S GND
 ```
 
-#### PC817 Channels Configuration:
-1. **IN1 (Tank Low Float):** Normally Open (NO) reed float placed near bottom (20% height). Closed when water drops below float level. Reads ACTIVE LOW on Pi GPIO.
-2. **IN2 (Interlock Out):** Sourced from the end of the series hardware safety chain. Reads HIGH when entire chain is complete (Fused 5V -> Full Float NC -> Sump Float NO -> Interlock Out).
-3. **IN3 (Interlock Mid):** Tap between Full Float and Sump Float. Used by cause logic to isolate whether the Full float opened or the Sump float opened.
-4. **IN4 (Leak Sensor):** Conductive grid / optical rain sensor at the pump manifold. Reads ACTIVE LOW when moisture bridges the contacts.
+#### PC817 Channels & Polarity Configuration:
+With PC817 open-collector outputs and pull-ups to 3.3V, energizing the optocoupler LED pulls the GPIO pin LOW (0). By default, all inputs use `active_low: true`, but each input has configurable polarity:
+1. **IN1 (Tank Low Float):** Normally Open (NO) reed float placed near bottom (20% height). Closed when water drops below float level (`tank_low_active_low: true` by default).
+2. **IN2 (Interlock Out):** Sourced from the end of the series hardware safety chain (`interlock_out_active_low: true` by default, energized chain pulls GPIO LOW).
+3. **IN3 (Interlock Mid):** Tap between Full Float and Sump Float (`interlock_mid_active_low: true` by default). Used by cause logic to isolate whether the Full float opened or the Sump float opened.
+4. **IN4 (Leak Sensor):** Conductive grid / optical rain sensor at the pump manifold (`leak_active_low: true` by default).
+5. **Contactor Aux Feedback:** Auxiliary contact on contactor (`feedback_active_low: true` by default).
 
 ---
 
