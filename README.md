@@ -1,5 +1,6 @@
 # Radxa ROCK Pi S Smart Water & Precision Irrigation Controller
 
+[![Version](https://img.shields.io/badge/Version-1.2.0-blue.svg)](#)
 [![Linux](https://img.shields.io/badge/Platform-Armbian%20Debian%2012%20(Bookworm)-blue.svg)](https://armbian.com)
 [![Hardware](https://img.shields.io/badge/SoC-Rockchip%20RK3308B%20(512MB)-orange.svg)](https://radxa.com)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://python.org)
@@ -13,7 +14,7 @@ The system reliably orchestrates:
 2. **Precision Wireless 4-Zone Drip Irrigation:** Remote battery/solar garden node driven by an ESP32-C3 Super Mini communicating via encrypted unicast ESP-NOW with an onboard USB gateway. Features 4x capacitive soil moisture probes digitized by an ADS1115 16-bit ADC, 4x 12V submersible pumps with hardware cutoffs, a reservoir dry-run float switch, and a pulse flow meter on Zone 1.
 3. **Dual-Layer Defense-in-Depth:** Hardware safety interlocks completely de-energize contactor coils independently of Linux software. Software failsafes enforce strict runtime caps, mandatory motor cooldowns, and per-sensor staleness isolation.
 4. **Security & Zero-Trust Architecture:** Strictly private Headscale/Tailscale mesh access, constant-time SHA-256 token verification, single-use 60s SSE streaming tickets, SSRF-guarded webhooks, and zero default keys.
-5. **Ultra-Low Resource Footprint:** Designed strictly for 512MB RAM boards using FastAPI + uvicorn (plain h11), SQLite WAL mode (~2MB cache), and Alpine.js frontend. Enforced by systemd cgroups (`MemoryHigh=128M`, `MemoryMax=200M`).
+5. **Ultra-Low Resource Footprint:** Designed strictly for 512MB RAM boards using FastAPI + uvicorn (plain h11), SQLite WAL mode (~2MB cache), and Alpine.js frontend. Enforced by systemd cgroups (`MemoryHigh=128M`, `MemoryMax=200M`). Single Python process budget <35 MB RAM.
 
 ---
 
@@ -22,7 +23,7 @@ The system reliably orchestrates:
 1. [System Architecture](#1-system-architecture)
 2. [Bill of Materials (BOM) & Sourcing](#2-bill-of-materials-bom--sourcing)
 3. [Electrical Schematics & Hardware Wiring](#3-electrical-schematics--hardware-wiring)
-   - [3.1 Rock Pi S 26-Pin Header Pinout](#31-rock-pi-s-26-pin-header-pinout)
+   - [3.1 Radxa ROCK Pi S Pin Header Reference](#31-radxa-rock-pi-s-pin-header-reference-verify-with-gpioinfo-devgpiochip1)
    - [3.2 Dual-Layer Interlock Chain & Truth Table](#32-dual-layer-interlock-chain--truth-table)
    - [3.3 25A Contactor & Auxiliary Feedback Wiring](#33-25a-contactor--auxiliary-feedback-wiring)
    - [3.4 ESP32-C3 Gateway & Garden Node Wiring](#34-esp32-c3-gateway--garden-node-wiring)
@@ -33,7 +34,7 @@ The system reliably orchestrates:
    - [Step 4: Run the One-Click Installer (`install.sh`)](#step-4-run-the-one-click-installer-installsh)
    - [Step 5: Generate Cryptographic ESP-NOW Secrets](#step-5-generate-cryptographic-esp-now-secrets)
    - [Step 6: Build & Flash ESP32-C3 Firmware via PlatformIO](#step-6-build--flash-esp32-c3-firmware-via-platformio)
-   - [Step 7: First-Run Web Setup Wizard](#step-7-first-run-web-setup-wizard)
+   - [Step 7: First-Run Web Setup Wizard (7 Steps)](#step-7-first-run-web-setup-wizard-7-steps)
    - [Step 8: Calibration (Soil Moisture & Pulse Flow Meter)](#step-8-calibration-soil-moisture--pulse-flow-meter)
 5. [Pre-Commissioning & Commissioning Checklist](#5-pre-commissioning--commissioning-checklist)
 6. [Comprehensive Troubleshooting Runbook (35 Scenarios)](#6-comprehensive-troubleshooting-runbook-35-scenarios)
@@ -60,6 +61,7 @@ The system reliably orchestrates:
 |   ├── 4-Channel PC817 Optocoupler Isolation (3.3V Logic Safe)                     |
 |   │     IN1: Tank Low Float (NO)       IN2: Interlock Output Tap                  |
 |   │     IN3: Interlock Midpoint Tap    IN4: Conductive Leak Sensor                |
+|   │     Aux FB: Contactor Auxiliary NO Contact (Welded Relay Detection)           |
 |   └── 25A AC Contactor Driver (12V/230V coil) with NO Auxiliary Contact Feedback  |
 +===================================================================================+
                                        │
@@ -80,7 +82,7 @@ The system reliably orchestrates:
 |                                                                                   |
 |  - 1x ADS1115 16-Bit I2C ADC (0x48): 4x Capacitive Soil Probes (8-sample median)  |
 |  - 4x Logic-Level N-MOSFETs: 12V DC Micro Submersible Drip Pumps                  |
-|  - 1x Reed Float Switch: Irrigation Reservoir low-level dry cutoff                |
+|  - 1x Reed Float Switch: Irrigation Reservoir low-level dry cutoff (GPIO 5)       |
 |  - 1x YF-S201 Hall-Effect Pulse Flow Meter on Zone 1 (with 5V->3.3V divider)      |
 |  - Hardwired Firmware Rules:                                                      |
 |      * Max 60s pump pulse execution                                               |
@@ -96,19 +98,19 @@ The system reliably orchestrates:
 
 | Category | Component | Quantity | Specification / Model | Est. Cost (USD) | Function |
 | :--- | :--- | :---: | :--- | :---: | :--- |
-| **SBC** | Radxa ROCK Pi S | 1 | 512MB RAM, RK3308B, Type-C Power | $18.00 | Central Automation Head-End |
+| **SBC** | Radxa ROCK Pi S | 1 | 512MB RAM, RK3308B, Type-C Power | $18.00 | Central Automation Head-End (<35 MB footprint) |
 | **Storage** | Micro-SD Card | 1 | 16GB or 32GB High Endurance Class 10 | $6.50 | OS and SQLite WAL storage |
 | **Microcontroller** | ESP32-C3 Super Mini | 2 | RISC-V Single Core, Type-C, Onboard Ceramic Ant | $6.00 | Gateway & Garden Node |
 | **Isolation** | PC817 Optocoupler Board | 1 | 4-Channel 12V/5V to 3.3V Galvanic Isolator | $2.50 | Float switches & leak sensor isolation |
-| **Power Relay** | AC Contactor | 1 | 2-Pole 25A 230V AC Coil (with NO Aux Contact) | $12.00 | Main overhead AC pump switching |
+| **Power Relay** | AC Contactor | 1 | 2-Pole 25A 230V AC Coil (with NO Aux Contact), AC-3 duty. Electrician sizes MCB/cable/overload from nameplate FLC. | $12.00 | Main overhead AC pump switching |
 | **Pilot Relay** | Relay Driver Module | 1 | 1-Channel 5V/12V Optocoupled Relay Module | $1.50 | Drives AC contactor coil |
 | **ADC Module** | ADS1115 ADC | 1 | 16-Bit 4-Channel I2C ADC Module (Address 0x48) | $3.00 | High-resolution soil moisture sampling |
 | **Sensors** | Capacitive Soil Probes | 4 | Corrosion-Resistant Capacitive Moisture v1.2/v2.0 | $6.00 | Zone 1-4 soil moisture readings |
-| **Sensors** | Float Switches | 3 | Stainless Steel / PP Vertical Float Switches | $6.00 | Full Float (NC), Sump (NO), Reservoir (NO) |
-| **Sensors** | Flow Meter | 1 | YF-S201 Hall-Effect Pulse Flow Meter | $4.50 | Zone 1 flow rate & leak monitoring |
+| **Sensors** | Float Switches | 3 | Stainless Steel / PP Vertical Float Switches | $6.00 | Full Float (NC), Sump (NO), Reservoir (NO, GPIO 5) |
+| **Sensors** | Flow Meter | 1 | YF-S201 Hall-Effect Pulse Flow Meter (configurable model + K-factor in config: default 7.5 = 450 pulses/L) | $4.50 | Zone 1 flow rate & leak monitoring |
 | **Sensors** | Leak Sensor | 1 | Conductive Grid Pad / Gold-Plated Water Sensor | $1.50 | Drip manifold leak detection |
 | **Drivers** | MOSFET Module | 1 | 4-Channel Logic-Level N-MOSFET (LR7843 / AO3400) | $3.50 | Low-side switching of 12V DC drip pumps |
-| **Pumps** | 12V Submersible Pumps | 4 | 12V DC 2A Micro Submersible Drip Pumps | $14.00 | Precision irrigation delivery |
+| **Pumps** | 12V Submersible Pumps | 4 | 12V DC Micro Submersible Drip Pumps (1.5A-2.0A operating, 2.5A peak per pump; max 2 concurrent pumps capped by firmware = 5.0A DC bus) | $14.00 | Precision irrigation delivery |
 | **RTC** | DS3231 I2C RTC | 1 | Precision TCXO RTC Module + CR2032 Battery | $2.50 | Monotonic time during internet loss |
 | **Audio** | USB Audio DAC | 1 | CM108 USB Audio Adapter + Powered Speaker | $4.50 | Synthesized voice alerts (espeak-ng) |
 | **Total** | - | - | - | **~$90.00** | Complete Industrial Automation |
@@ -120,41 +122,23 @@ The system reliably orchestrates:
 > [!CAUTION]
 > **3.3V Logic Level Warning:** The Rockchip RK3308 GPIO inputs operate strictly at 3.3V. Applying 5V or 12V directly to RK3308 pins will permanently destroy the SoC. Always pass external sensor lines through the PC817 optoisolator board.
 
-### 3.1 Rock Pi S 26-Pin Header Pinout
+### 3.1 Radxa ROCK Pi S Pin Header Reference (Verify with `gpioinfo /dev/gpiochip1`)
 
-Connect the optocoupler board, pilot relay, and I2C peripherals to Header 1:
+All GPIO pins on the RK3308 operate strictly at **3.3V logic levels**. Inputs must NEVER be exposed to 5V or 12V directly. Pin numbers and line offsets can shift between kernel device-tree overlays and Armbian releases; always verify active line numbers with `gpioinfo /dev/gpiochip1` and set them in `/etc/smart-water/config.yaml` or during the Web Commissioning Wizard Step 2.
 
-```
-                      Radxa ROCK Pi S - Header 1 (26-Pin)
-                   +---------------------------------------+
-   3.3V Power (1)  | [01] [02] | (2)  5V Power (Fused)
-   I2C7_SDA   (3)  | [03] [04] | (4)  5V Power
-   I2C7_SCL   (5)  | [05] [06] | (6)  Ground
-  GPIO1_B2/IN1 (7) | [07] [08] | (8)  UART0_TX (Debug)
-  GPIO1_B3/IN2 (9) | [09] [10] | (10) UART0_RX (Debug)
- GPIO1_B4/IN3 (11) | [11] [12] | (12) GPIO1_B5/IN4
-              (13) | [13] [14] | (14) Ground
-GPIO1_C0/Relay(15) | [15] [16] | (16) GPIO1_C1 (Contactor Aux Feedback)
-              (17) | [17] [18] | (18) Ground
-              (19) | [19] [20] | (20) Ground
-              (21) | [21] [22] | (22) Ground
-              (23) | [23] [24] | (24) Ground
-              (25) | [25] [26] | (26) Ground
-                   +---------------------------------------+
-```
-
-| Signal | Header Pin | Pin Label | Connected Peripheral | Logic Level |
+| Function / Signal | Physical Pin (H1) | Kernel Pin Name | Default Logic Level | Connected Peripheral / Circuit |
 | :--- | :---: | :--- | :--- | :--- |
-| **3.3V VCC** | Pin 1 | 3V3 | PC817 Collector Pull-up Rail | 3.3V DC |
-| **I2C7 SDA** | Pin 3 | GPIO1_B0 | DS3231 RTC SDA | 3.3V DC (Pull-up) |
-| **I2C7 SCL** | Pin 5 | GPIO1_B1 | DS3231 RTC SCL | 3.3V DC (Pull-up) |
-| **IN1 (Tank Low)** | Pin 7 | GPIO1_B2 | PC817 Opto Output 1 | Configurable (Active LOW default) |
-| **IN2 (Interlock Out)** | Pin 9 | GPIO1_B3 | PC817 Opto Output 2 | Configurable (Active LOW default / PC817 open-collector) |
-| **IN3 (Interlock Mid)** | Pin 11 | GPIO1_B4 | PC817 Opto Output 3 | Configurable (Active LOW default / PC817 open-collector) |
-| **IN4 (Leak Sensor)** | Pin 12 | GPIO1_B5 | PC817 Opto Output 4 | Configurable (Active LOW default) |
-| **Pilot Relay Out** | Pin 15 | GPIO1_C0 | Pilot Relay IN (Triggers Contactor Coil) | Active HIGH (unless confirmed pull-up) |
-| **Contactor Aux In** | Pin 16 | GPIO1_C1 | Contactor NO Auxiliary Contact (via Opto) | Configurable (Active LOW default) |
-| **GND** | Pin 6, 14 | GND | Common Digital Ground | 0V |
+| **3.3V System Rail** | Pin 1 | VCC_3V3 | 3.3V DC Rail | PC817 Collector Pull-up Rail (Max 150mA external) |
+| **5V Supply Rail** | Pin 2 | VCC_5V | 5.0V DC Rail | 5V DC Supply Rail (Fused 0.5A) |
+| **I2C7 SDA** | Pin 3 | GPIO1_C2 (Line 50) | 3.3V DC (Pull-up) | DS3231 RTC SDA & Optional SSD1306 OLED |
+| **I2C7 SCL** | Pin 5 | GPIO1_C3 (Line 51) | 3.3V DC (Pull-up) | DS3231 RTC SCL & Optional SSD1306 OLED |
+| **Common Ground** | Pin 6, 14 | GND | 0V | Common DC System Ground |
+| **IN1 (Tank Low)** | Pin 7 | GPIO1_B2 (Line 42) | Configurable (Active LOW default) | PC817 Opto Channel 1 (Overhead Tank Low Float) |
+| **IN2 (Interlock Out)**| Pin 9 | GPIO1_B3 (Line 43) | Configurable (Active LOW default) | PC817 Opto Channel 2 (End of Float Safety Chain) |
+| **IN3 (Interlock Mid)**| Pin 11 | GPIO1_B4 (Line 44) | Configurable (Active LOW default) | PC817 Opto Channel 3 (Mid-Point Tap between Floats) |
+| **IN4 (Leak Sensor)** | Pin 12 | GPIO1_B5 (Line 45) | Configurable (Active LOW default) | PC817 Opto Channel 4 (Manifold Conductive Leak Sensor) |
+| **Pilot Relay Out** | Pin 15 | GPIO1_C0 (Line 48) | Active HIGH (unless pull-up confirmed) | Pilot Relay IN (Switches 230V/12V Contactor Coil) |
+| **Contactor Aux In** | Pin 16 | GPIO1_C1 (Line 49) | Configurable (Active LOW default) | Contactor NO Auxiliary Contact (via PC817) |
 
 ---
 
@@ -186,15 +170,17 @@ The overhead tank replenishment system enforces physical safety by wiring the fl
 | **LOW (0)** | **HIGH (1)** | Sump dry (Sump float opened circuit). | Pilot relay VCC cut; motor instantly de-energized. | `dry_sump` |
 | **HIGH (1)** | **LOW (0)** | **IMPOSSIBLE STATE** (Midpoint low while output high). | **Hardware wiring fault (cut wire or short circuit).** | `wiring_fault` (Alarm & Lockout) |
 
+All inputs interface via PC817 optocouplers with open-collector outputs and pull-ups to 3.3V; energizing the optocoupler LED pulls the GPIO pin LOW. Polarity is individually configurable in `/etc/smart-water/config.yaml` and the Commissioning Wizard (defaults: `tank_low_active_low: true`, `interlock_out_active_low: true`, `interlock_mid_active_low: true`, `leak_active_low: true`, `feedback_active_low: true`).
+
 ---
 
 ### 3.3 25A Contactor & Auxiliary Feedback Wiring
 
-1. **Main Line Switching:** Wire 230V AC Live (L) and Neutral (N) through the 25A contactor's main poles (L1/T1 and L2/T2) to the overhead tank pump motor.
-2. **Pilot Relay:** The ROCK Pi S pin `GPIO1_C0` drives the optocoupled pilot relay module. When energized, the pilot relay closes the circuit supplying 230V (or 12V/24V) to the contactor's `A1/A2` coil terminals.
-3. **Auxiliary Feedback Contact:** The contactor features a Normally Open (NO) auxiliary contact (`13/14`). Wire this contact through an optocoupler channel to `GPIO1_C1`. The software checks this feedback:
-   - If the coil is commanded ON but `GPIO1_C1` does not go HIGH within 500ms, an alert `CONTACTOR_FAILED_TO_PULL` is raised.
-   - If the coil is commanded OFF but `GPIO1_C1` remains HIGH, a critical alarm `CONTACTOR_WELDED_CONTACTS` is raised immediately.
+1. **Main Line Switching & Sizing:** Electrician sizes MCB, cable, and thermal overload relay from the motor nameplate Full Load Current (FLC). Wire 230V AC Live (L) and Neutral (N) through the 25A contactor's main poles (rated for AC-3 inductive motor duty) to the overhead tank pump motor.
+2. **Pilot Relay:** The ROCK Pi S pin drives the optocoupled pilot relay module. When energized, the pilot relay closes the circuit supplying 230V (or 12V/24V) to the contactor's `A1/A2` coil terminals.
+3. **Auxiliary Feedback Contact:** The contactor features a Normally Open (NO) auxiliary contact (`13/14`). Wire this contact through a PC817 optocoupler channel to the feedback GPIO. The software checks this feedback:
+   - On energizing: polls feedback every 50ms up to `pull_in_timeout_ms` (default 1000ms); failure to pull in raises `CONTACTOR_MISMATCH`.
+   - On de-energizing: failure of the relay write raises critical alarm `RELAY_WRITE_FAILED` and locks motor into `FAULT`. If feedback aux contact remains closed, `WELDED_CONTACT` alarm is raised with motor lockout.
 
 ---
 
@@ -350,15 +336,15 @@ The ESP-NOW wireless link uses encrypted unicast communication (CCMP encryption 
    ======================================================================
    Wrote keys to /etc/smart-water/espnow.key (mode 0600)
 
-   Copy these definitions into firmware/gateway/src/secrets.h
-   and firmware/node/src/secrets.h:
+   Copy these definitions into firmware/gateway/include/secrets.h
+   and firmware/node/include/secrets.h:
    ----------------------------------------------------------------------
    #define ESPNOW_PMK_KEY {0x1a, 0x2b, 0x3c, ...}
    #define ESPNOW_LMK_KEY {0x4d, 0x5e, 0x6f, ...}
    #define HMAC_SHARED_KEY "9f8e7d6c5b4a..."
    ----------------------------------------------------------------------
    ```
-3. Create `firmware/gateway/src/secrets.h` and `firmware/node/src/secrets.h` with the printed definitions. (Both files are ignored by git to prevent secret leakage).
+3. Create `firmware/gateway/include/secrets.h` and `firmware/node/include/secrets.h` with the printed definitions. (Both files are in `include/` and ignored by git to prevent secret leakage).
 
 ---
 
@@ -395,7 +381,7 @@ pip install platformio
 
 ---
 
-### Step 7: First-Run Web Setup Wizard
+### Step 7: First-Run Web Setup Wizard (7 Steps)
 
 On first boot with unconfigured GPIO lines, the controller boots safely into `SAFE-NO-HARDWARE` mode with all pumps and relays de-energized.
 
@@ -403,13 +389,16 @@ On first boot with unconfigured GPIO lines, the controller boots safely into `SA
    ```
    http://<tailscale-ip>:8000
    ```
-2. The **First-Run Commissioning Wizard** will guide you through:
-   - **Step 1 - Pin Mapping:** Select detected GPIO line offsets for IN1, IN2, IN3, IN4, Pilot Relay, and Aux Feedback.
-   - **Step 2 - Opto Input Live Test:** Test your float switches. Raise and lower the floats manually to confirm the UI reflects state changes in real time.
-   - **Step 3 - Contactor Dry Click Test:** Click the "Test Relay (0.5s Pulse)" button. Listen for the contactor pulling in and releasing, and confirm auxiliary contact verification.
-   - **Step 4 - Gateway & Node Verification:** Verify incoming `gw_hb` and `hb` packets from the garden node.
-   - **Step 5 - Soil Probe Calibration:** Complete the dry and wet calibration steps.
-   - **Step 6 - Finish:** Writes your verified settings to `/var/lib/smart-water/settings.yaml`, sets `setup_complete: true`, and prompts for service restart.
+   *(Note: The controller binds to `127.0.0.1` or your private Tailscale IP on port 8000; binding to `0.0.0.0` is forbidden unless `allow_all_interfaces: true` is explicitly configured).*
+
+2. The **7-Step First-Run Commissioning Wizard** will guide you through:
+   - **Step 1 - Network Bind & Bearer Token:** Review network binding and authenticate with the Bearer token generated at `/var/lib/smart-water/auth.json`.
+   - **Step 2 - Map Head-End Pins:** Inspect detected GPIO line offsets using live `gpioinfo /dev/gpiochip1` output and select pins for IN1-IN4, Pilot Relay, and Aux Feedback.
+   - **Step 3 - Float Switches & Polarity:** Physically lift and drop each float switch. View live raw logic levels and configure active-low polarities (defaults reflect PC817 open-collector pull-down behavior).
+   - **Step 4 - Contactor Dry Click Test:** Click "Test Relay (0.5s Pulse)" without mains power connected. Verify coil pull-in timing and auxiliary feedback closure.
+   - **Step 5 - Pair Wireless Garden Gateway:** Verify USB serial connection (`/dev/garden-gateway`) and incoming authenticated ESP-NOW packets (`hb`, `soil`, `flow`).
+   - **Step 6 - Probe & Flow Calibration:** Calibrate capacitive soil probes in air (dry) and water (wet); verify Zone 1 flow meter pulse response and baseline L/min.
+   - **Step 7 - Finalize Commissioning:** Review all physical test results, save verified configuration to `/var/lib/smart-water/settings.yaml`, lock the wizard, and prompt for service restart.
 
 3. Restart the service to apply the verified hardware configuration:
    ```bash
@@ -504,41 +493,45 @@ All serial and wireless communication between the ROCK Pi S and the ESP32-C3 nod
 
 - **Heartbeat (`hb`):**
   ```json
-  {"v":1.1,"t":"hb","seq":1,"boot":305419896,"uptime_s":120,"res_wet":true,"ads_ok":true,"pumps":[0,0,0,0],"rssi":-62,"sig":"7b26918d363bbaae"}
+  {"v":"1.1","t":"hb","nonce":1001,"seq":1,"uptime_s":120,"res_wet":true,"ads_ok":true,"pumps":[0,0,0,0],"reset_reason":1,"rssi":-65,"sig":"3d4a199760f47ebf"}
   ```
 - **Soil Probe Moisture (`soil`):**
   ```json
-  {"v":1.1,"t":"soil","seq":2,"boot":305419896,"z":1,"volts":1.842,"sig":"a18a933ffcfefcba"}
+  {"v":"1.1","t":"soil","nonce":1001,"seq":2,"z":1,"volts":1.842,"sig":"7dd8f26ab85b860e"}
   ```
 - **Flow Meter Pulses (`flow`):**
   ```json
-  {"v":1.1,"t":"flow","seq":3,"boot":305419896,"z":1,"delta_pulses":15,"period_ms":1000,"sig":"9b61e06fa49d2149"}
+  {"v":"1.1","t":"flow","nonce":1001,"seq":3,"z":1,"delta_pulses":15,"period_ms":1000,"sig":"0e8e872241b8db70"}
+  ```
+- **Pump Event (`pump`):**
+  ```json
+  {"v":"1.1","t":"pump","nonce":1001,"seq":4,"z":1,"on":true,"reason":"cmd","run_s":15,"sig":"5fe9711f9473028a"}
   ```
 - **Command Acknowledgment (`ack`):**
   ```json
-  {"v":1.1,"t":"ack","seq":4,"boot":305419896,"acked_seq":1,"status":"OK","sig":"09d3bdf9dca68593"}
+  {"v":"1.1","t":"ack","nonce":1001,"seq":5,"id":"cmd-001","status":"ok","err":"","sig":"0a2d092007f31086"}
   ```
 
 ### Control Packets (Pi -> Node)
 
-- **Pump Run Command (`pump`):**
+- **Pump Run Command (`cmd`):**
   ```json
-  {"v":1.1,"cmd":"pump","seq":1,"boot":305419896,"z":1,"duration_s":15,"sig":"18536f909192c730"}
+  {"v":"1.1","t":"cmd","nonce":2002,"seq":1,"id":"cmd-001","z":1,"run_s":15,"sig":"756580f2703f2006"}
   ```
 - **Pump Stop Command (`stop`):**
   ```json
-  {"v":1.1,"cmd":"stop","seq":2,"boot":305419896,"z":1,"sig":"be1529124adff045"}
+  {"v":"1.1","t":"stop","nonce":2002,"seq":2,"id":"cmd-002","z":1,"sig":"92b186b1f5e489fa"}
   ```
 - **Emergency Stop All Pumps (`stop_all`):**
   ```json
-  {"v":1.1,"cmd":"stop_all","seq":3,"boot":305419896,"sig":"c953504bf1f7e8ba"}
+  {"v":"1.1","t":"stop_all","nonce":2002,"seq":3,"id":"cmd-003","sig":"73b8a1e4c99759a6"}
   ```
 
 ---
 
 ## 8. REST & SSE Telemetry API Reference
 
-All mutating endpoints require an `Authorization: Bearer <token>` header.
+The server listens on port **8000** and strictly binds to `127.0.0.1` or your private Tailscale mesh IP (`100.x.y.z`). Binding to `0.0.0.0` is blocked by default for security unless `allow_all_interfaces: true` is configured. All mutating endpoints require an `Authorization: Bearer <token>` header.
 
 ### Endpoints Summary
 
@@ -557,6 +550,8 @@ All mutating endpoints require an `Authorization: Bearer <token>` header.
 | `POST` | `/api/flow/calibrate` | Yes | Runs 10s calibration pulse on Zone 1 and sets cutoff thresholds |
 | `POST` | `/api/control/emergency-stop` | Yes | Emergency stops AC motor and all 4 DC plant pumps |
 | `POST` | `/api/test/relay` | Yes | Safe 500ms dry contactor test with aux contact verification |
+| `POST` | `/api/backup` | Yes | Triggers an immediate WAL checkpointed SQLite backup |
+| `GET` | `/api/backup/download` | Yes | Downloads binary SQLite backup database file |
 
 ---
 
@@ -567,7 +562,9 @@ Create an atomic, non-locking backup of the SQLite database:
 ```bash
 curl -X POST -H "Authorization: Bearer $AUTH_TOKEN" http://localhost:8000/api/backup
 ```
-To restore from backup:
+In the Web UI, clicking **Download Backup** uses an authenticated `fetch()` call with the `Bearer` token header (`GET /api/backup/download`), converts the binary response to a Blob, and triggers a clean browser download.
+
+To restore from a backup file:
 ```bash
 sudo -u smartwater /opt/smart-water/venv/bin/python -m app.cli restore /var/lib/smart-water/backups/backup_20261012.db
 ```

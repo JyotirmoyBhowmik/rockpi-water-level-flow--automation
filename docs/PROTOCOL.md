@@ -63,3 +63,65 @@ To protect against packet replay attacks across power cycles and network drops:
    - When a packet with a new `nonce` arrives:
      - Under `strict_nonce_verification = False` (default backward compatibility): The tracker accepts the new session and resets sequence tracking to the packet's `seq`.
      - Under `strict_nonce_verification = True` (Choice B hardening): A new nonce is rejected unless it is accompanied by `seq == 1` (a boot announcement) or a strictly increasing `boot_count` read from non-volatile storage (NVS). Replayed mid-session packets from previous reboots with `seq > 1` are dropped.
+
+---
+
+## 5. Golden Packet Vectors (from `protocol/messages.json`)
+
+All examples use test secret key `"test-secret-key-32-chars-long12345"`.
+
+### 5.1 Telemetry Packets (Node -> Pi)
+
+- **Heartbeat (`hb`):**
+  ```json
+  {"v":"1.1","t":"hb","nonce":1001,"seq":1,"uptime_s":120,"res_wet":true,"ads_ok":true,"pumps":[0,0,0,0],"reset_reason":1,"rssi":-65,"sig":"3d4a199760f47ebf"}
+  ```
+
+- **Soil Probe Moisture (`soil`):**
+  ```json
+  {"v":"1.1","t":"soil","nonce":1001,"seq":2,"z":1,"volts":1.842,"sig":"7dd8f26ab85b860e"}
+  ```
+
+- **Flow Meter Pulses (`flow`):**
+  ```json
+  {"v":"1.1","t":"flow","nonce":1001,"seq":3,"z":1,"delta_pulses":15,"period_ms":1000,"sig":"0e8e872241b8db70"}
+  ```
+
+- **Pump Event (`pump`):**
+  ```json
+  {"v":"1.1","t":"pump","nonce":1001,"seq":4,"z":1,"on":true,"reason":"cmd","run_s":15,"sig":"5fe9711f9473028a"}
+  ```
+
+- **Command Acknowledgment (`ack`):**
+  ```json
+  {"v":"1.1","t":"ack","nonce":1001,"seq":5,"id":"cmd-001","status":"ok","err":"","sig":"0a2d092007f31086"}
+  ```
+
+### 5.2 Control Commands (Pi -> Node)
+
+- **Pump Run Command (`cmd`):**
+  ```json
+  {"v":"1.1","t":"cmd","nonce":2002,"seq":1,"id":"cmd-001","z":1,"run_s":15,"sig":"756580f2703f2006"}
+  ```
+
+- **Stop Zone Pump Command (`stop`):**
+  ```json
+  {"v":"1.1","t":"stop","nonce":2002,"seq":2,"id":"cmd-002","z":1,"sig":"92b186b1f5e489fa"}
+  ```
+
+- **Emergency Stop All Pumps Command (`stop_all`):**
+  ```json
+  {"v":"1.1","t":"stop_all","nonce":2002,"seq":3,"id":"cmd-003","sig":"73b8a1e4c99759a6"}
+  ```
+
+### 5.3 Escaped Strings Vectors
+
+- **Pump with escaped reason string:**
+  ```json
+  {"v":"1.1","t":"pump","nonce":1001,"seq":6,"z":2,"on":false,"reason":"fault: \"sensor\" \\ timeout","run_s":10,"sig":"4e8cbb79bffe9a54"}
+  ```
+
+- **Ack with escaped ID and error string:**
+  ```json
+  {"v":"1.1","t":"ack","nonce":1001,"seq":7,"id":"cmd:\"001\"\\test","status":"err","err":"err: \"timeout\" \\ fault","sig":"576a5e905e4bbf41"}
+  ```

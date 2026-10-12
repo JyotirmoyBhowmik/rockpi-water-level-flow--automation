@@ -195,9 +195,11 @@ async def calibrate_zone_flow(payload: FlowCalibrateRequest) -> Dict[str, Any]:
     final_pulses = state_after["garden"]["zones"].get(z_key, {}).get("flow_pulses", 0)
     observed_pulses = max(0, final_pulses - initial_pulses)
 
-    # Compute flow (YF-S201 nominal 7.5 Hz per L/min -> 75 pulses in 10s per L/min)
-    observed_flow_lpm = observed_pulses / 75.0
-    pulses_per_l = 450.0
+    # Compute flow using configured K-factor (Hz per L/min)
+    z_cfg_pre = system_config.zones.get(z_key)
+    k_factor = z_cfg_pre.flow_k_factor if z_cfg_pre else 7.5
+    observed_flow_lpm = observed_pulses / (k_factor * 10.0)
+    pulses_per_l = k_factor * 60.0
 
     if observed_flow_lpm < 0.3:
         warning_msg = "Low flow or dry run detected during calibration"

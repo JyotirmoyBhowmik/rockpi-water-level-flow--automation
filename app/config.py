@@ -160,6 +160,8 @@ class ZoneConfig(BaseModel):
     max_pulse_seconds: int = Field(default=60, ge=5, le=60)
     cooldown_hours: float = Field(default=6.0, ge=0.5, le=72.0)
     has_flow_meter: bool = Field(default=False)
+    flow_meter_model: str = Field(default="YF-S201", description="Flow sensor hardware model, e.g. YF-S201")
+    flow_k_factor: float = Field(default=7.5, ge=0.1, le=100.0, description="K-factor in Hz per L/min (7.5 for YF-S201 = 450 pulses/L)")
     min_pulses_10s: int = Field(default=5, ge=0)
     calibration: ZoneCalibration = Field(default_factory=ZoneCalibration)
 

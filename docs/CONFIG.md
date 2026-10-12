@@ -98,6 +98,8 @@ zones:
     max_pulse_seconds: 60
     cooldown_hours: 6.0
     has_flow_meter: true
+    flow_meter_model: "YF-S201"
+    flow_k_factor: 7.5
     min_pulses_10s: 5
     calibration:
       dry_v: null
@@ -232,6 +234,8 @@ Per-zone irrigation settings: moisture threshold, pulse limits, cooldown periods
 | `max_pulse_seconds` | `int` | `60` | >= 5, <= 60 | - |
 | `cooldown_hours` | `float` | `6.0` | >= 0.5, <= 72.0 | - |
 | `has_flow_meter` | `bool` | `false` | - | - |
+| `flow_meter_model` | `str` | `YF-S201` | - | Flow sensor hardware model, e.g. YF-S201 |
+| `flow_k_factor` | `float` | `7.5` | >= 0.1, <= 100.0 | K-factor in Hz per L/min (7.5 for YF-S201 = 450 pulses/L) |
 | `min_pulses_10s` | `int` | `5` | >= 0 | - |
 | `calibration` | `ZoneCalibration` | `ZoneCalibration()` | - | - |
 

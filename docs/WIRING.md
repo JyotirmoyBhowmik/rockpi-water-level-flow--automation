@@ -29,22 +29,22 @@ The Smart Water & Precision Irrigation Controller separates the control plane in
 
 ## 2. Head-End Wiring (Radxa ROCK Pi S)
 
-### 2.1 Rock Pi S Pin Header Reference (Header 1 & Header 2)
-The Radxa ROCK Pi S exposes 26-pin Header 1 and 26-pin Header 2 (0.1" pitch). All GPIO pins on the RK3308 operate strictly at **3.3V logic levels**. Inputs must NEVER be exposed to 5V or 12V directly.
+### 2.1 Radxa ROCK Pi S Pin Header Reference (Verify with `gpioinfo /dev/gpiochip1`)
+The Radxa ROCK Pi S exposes 26-pin Header 1 and 26-pin Header 2 (0.1" pitch). All GPIO pins on the RK3308 operate strictly at **3.3V logic levels**. Inputs must NEVER be exposed to 5V or 12V directly. Pin numbers and line offsets can shift between kernel device-tree overlays and Armbian releases; always verify active line numbers with `gpioinfo /dev/gpiochip1` and set them in `/etc/smart-water/config.yaml` or during the Web Commissioning Wizard Step 2.
 
-| Function | Pin Name | Physical Pin | Rockchip GPIO Offset | Signal Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **3.3V Power** | VCC_3V3 | Pin 1 (H1) | - | 3.3V System Rail (Max 150mA external) |
-| **5V Power** | VCC_5V | Pin 2 (H1) | - | 5V DC Supply Rail (Fused) |
-| **Ground** | GND | Pin 6 (H1) | - | Common DC Ground |
-| **I2C7 SDA** | I2C7_SDA | Pin 3 (H1) | GPIO1_C2 (Line 50) | DS3231 RTC & Optional SSD1306 OLED |
-| **I2C7 SCL** | I2C7_SCL | Pin 5 (H1) | GPIO1_C3 (Line 51) | DS3231 RTC & Optional SSD1306 OLED |
-| **PC817 IN1** | IN1_GPIO | Header 1 | Configurable in YAML | Tank Low Float (Active LOW default, configurable) |
-| **PC817 IN2** | IN2_GPIO | Header 1 | Configurable in YAML | Interlock Chain Closed (Active LOW default / PC817 open-collector) |
-| **PC817 IN3** | IN3_GPIO | Header 1 | Configurable in YAML | Interlock Mid-Point (Active LOW default / PC817 open-collector) |
-| **PC817 IN4** | IN4_GPIO | Header 1 | Configurable in YAML | Leak Detection Sensor (Active LOW default, configurable) |
-| **Contactor Out** | RELAY_GPIO | Header 1 | Configurable in YAML | 25A Contactor Driver Output |
-| **Contactor Aux** | AUX_FB_GPIO | Header 1 | Configurable in YAML | Contactor Feedback (Active LOW default via PC817) |
+| Function / Signal | Physical Pin (H1) | Kernel Pin Name | Default Logic Level | Connected Peripheral / Circuit |
+| :--- | :---: | :--- | :--- | :--- |
+| **3.3V System Rail** | Pin 1 | VCC_3V3 | 3.3V DC Rail | PC817 Collector Pull-up Rail (Max 150mA external) |
+| **5V Supply Rail** | Pin 2 | VCC_5V | 5.0V DC Rail | 5V DC Supply Rail (Fused 0.5A) |
+| **I2C7 SDA** | Pin 3 | GPIO1_C2 (Line 50) | 3.3V DC (Pull-up) | DS3231 RTC SDA & Optional SSD1306 OLED |
+| **I2C7 SCL** | Pin 5 | GPIO1_C3 (Line 51) | 3.3V DC (Pull-up) | DS3231 RTC SCL & Optional SSD1306 OLED |
+| **Common Ground** | Pin 6, 14 | GND | 0V | Common DC System Ground |
+| **IN1 (Tank Low)** | Pin 7 | GPIO1_B2 (Line 42) | Configurable (Active LOW default) | PC817 Opto Channel 1 (Overhead Tank Low Float) |
+| **IN2 (Interlock Out)**| Pin 9 | GPIO1_B3 (Line 43) | Configurable (Active LOW default) | PC817 Opto Channel 2 (End of Float Safety Chain) |
+| **IN3 (Interlock Mid)**| Pin 11 | GPIO1_B4 (Line 44) | Configurable (Active LOW default) | PC817 Opto Channel 3 (Mid-Point Tap between Floats) |
+| **IN4 (Leak Sensor)** | Pin 12 | GPIO1_B5 (Line 45) | Configurable (Active LOW default) | PC817 Opto Channel 4 (Manifold Conductive Leak Sensor) |
+| **Pilot Relay Out** | Pin 15 | GPIO1_C0 (Line 48) | Active HIGH (unless pull-up confirmed) | Pilot Relay IN (Switches 230V/12V Contactor Coil) |
+| **Contactor Aux In** | Pin 16 | GPIO1_C1 (Line 49) | Configurable (Active LOW default) | Contactor NO Auxiliary Contact (via PC817) |
 
 ---
 
@@ -113,10 +113,9 @@ The primary safety barrier does NOT rely on software or microcontrollers. Fused 
 ---
 
 ### 2.4 AC Contactor (25A) Driver Circuit
-- The main AC pump (1.5 HP to 3 HP single-phase) draws up to 18A continuous and 45A inrush.
-- **NEVER** drive AC pumps directly with miniature PCB relays.
-- A 25A industrial AC contactor (e.g., Schneider TeSys / ABB) with a 230V AC or 12V DC coil is used.
-- The Rock Pi S drives an optocoupled relay board, which in turn switches the contactor coil.
+- **Motor Sizing & Overload Protection:** Electrician sizes MCB, cable, and thermal overload relay from the motor nameplate Full Load Current (FLC). Single-phase submersible pumps (1.5 HP to 3 HP) typically draw up to 18A continuous and 45A inrush.
+- **Contactor Specification:** A 25A industrial AC contactor (e.g., Schneider TeSys LC1D / ABB AF series) rated for AC-3 inductive motor duty with a 230V AC or 12V DC coil is used. **NEVER** drive AC pumps directly with miniature PCB relays.
+- **Relay Driver:** The Rock Pi S drives an optocoupled pilot relay board, which in turn switches the contactor coil.
 - A **10k pull-down resistor** is hardwired at the gate of the relay driver to guarantee the relay stays OFF during Rockchip bootloader initialization.
 - An **RC Snubber (100 ohm + 0.1 uF 400V)** is wired across the contactor coil terminals to quench inductive flyback.
 
@@ -194,7 +193,8 @@ Probe GND (All 4 Probes) ------------> GND
 ---
 
 ### 3.3 12V Drip Pump MOSFET Drivers (Zones 1-4)
-Four logic-level N-Channel MOSFETs (e.g., IRLZ44N, AO3400, or LR7843) switch the low side of 12V DC 2A submersible pumps.
+Four logic-level N-Channel MOSFETs (e.g., IRLZ44N, AO3400, or LR7843) switch the low side of 12V DC micro submersible drip pumps (1.5A - 2.0A continuous operating current, 2.5A peak inrush per pump).
+The DC power rail / battery bank must be sized for at least 5.0A DC: the ESP32-C3 firmware strictly caps concurrent pump actuation to a maximum of 2 active pumps at any moment.
 
 ```
        +12V DC Battery / Solar Bus
@@ -219,6 +219,7 @@ ESP32-C3 GPIO (0,1,3,10) --- Gate [ 100 Ohm Gate Resistor ]
 ---
 
 ### 3.4 Zone 1 Hall-Effect Flow Meter & 5V-to-3.3V Voltage Divider
+Zone 1 flow monitoring supports configurable flow meter models (default `flow_meter_model: "YF-S201"` with calibration factor `flow_k_factor: 7.5`, equivalent to 450 pulses/L).
 The YF-S201 Hall-effect flow meter requires a 5V supply to operate reliably. However, its pulse output emits 5V square waves, which **will destroy** the ESP32-C3 GPIO pin if connected directly. A precision resistive voltage divider scales the 5V pulse to 3.33V:
 
 ```
@@ -289,7 +290,7 @@ Follow these stages in order to guarantee safety and prevent hardware damage:
 
 | Circuit | Operating Voltage | Peak Current | Recommended Wire Gauge | Max Cable Run |
 | :--- | :--- | :--- | :--- | :--- |
-| **Main AC Pump Feed** | 230V AC | 25A | 4.0 mm² (12 AWG Copper) | 30 meters |
+| **Main AC Pump Feed** | 230V AC | Sized per motor FLC (typ. 18A-25A) | 4.0 mm² (12 AWG Copper) — Electrician sizes MCB, cable, and overload from nameplate FLC | 30 meters |
 | **Contactor Coil** | 230V AC / 12V DC | 0.2A | 0.75 mm² (18 AWG) | 5 meters |
 | **Contactor Aux Feedback** | 3.3V DC | <1 mA | 0.5 mm² (20 AWG) | 2 meters |
 | **Opto Float Switches** | 5V DC | 20 mA | 0.5 mm² Shielded Twisted Pair | 50 meters |

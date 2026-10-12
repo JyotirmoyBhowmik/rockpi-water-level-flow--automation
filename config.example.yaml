@@ -70,6 +70,8 @@ zones:
     max_pulse_seconds: 60
     cooldown_hours: 6.0
     has_flow_meter: true           # Zone 1 has in-line pulse flow meter
+    flow_meter_model: "YF-S201"    # Hall-effect flow sensor model
+    flow_k_factor: 7.5             # K-factor in Hz per L/min (7.5 for YF-S201 = 450 pulses/L)
     min_pulses_10s: 5              # Minimum expected flow pulses in 10s
     calibration:
       dry_v: null                  # In air voltage (e.g. 2.70V). Uncalibrated = cannot auto-water

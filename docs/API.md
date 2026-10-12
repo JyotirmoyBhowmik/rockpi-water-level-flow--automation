@@ -6,6 +6,8 @@ All API endpoints (except `/healthz`, static UI assets, and unauthenticated setu
 Authorization: Bearer <your-secret-token>
 ```
 
+> **Network Binding & Port:** The HTTP server listens on port **8000** (default). By default, it binds to `127.0.0.1` (or your private Tailscale / Headscale 100.x.y.z IP). Binding to all interfaces (`0.0.0.0` or `::`) is explicitly refused unless `allow_all_interfaces: true` is configured in `/etc/smart-water/config.yaml`.
+
 ---
 
 ## 1. Standard Error Envelope
@@ -30,7 +32,7 @@ Returns system health, uptime, and firmware readiness without requiring an authe
 ```json
 {
   "status": "healthy",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "system_status": "ONLINE",
   "hardware_ready": true,
   "uptime_seconds": 3600,
@@ -91,9 +93,18 @@ Returns live state of head-end opto inputs, contactor motor, ESP-NOW wireless ga
 }
 ```
 
-### 2.3 Real-Time SSE Stream
-`GET /api/telemetry/stream`
-Server-Sent Events (SSE) streaming live telemetry at 1Hz (`Content-Type: text/event-stream`). Disconnects automatically if client stops consuming to conserve RAM.
+### 2.3 Real-Time SSE Stream (Ticket-Authenticated)
+1. **Acquire Streaming Ticket:**  
+   `POST /api/telemetry/ticket` (authenticated via `Authorization: Bearer <token>`). Returns a single-use ticket valid for 60 seconds:
+   ```json
+   {
+     "ticket": "9a8b7c6d-ticket-uuid-here",
+     "expires_in_s": 60
+   }
+   ```
+2. **Connect to SSE Stream:**  
+   `GET /api/telemetry/stream?ticket=<ticket_id>`  
+   Server-Sent Events (SSE) streaming live telemetry at 1Hz (`Content-Type: text/event-stream`). Disconnects automatically if client stops consuming to conserve RAM.
 
 ### 2.4 Event Journal (Paginated)
 `GET /api/events?limit=50&offset=0`
@@ -103,15 +114,10 @@ Returns timestamped historical security interlock trips, pump starts, stops, and
 `GET /api/history?limit=100&offset=0`
 Returns 60s downsampled sensor readings for charting and analysis.
 
-### 2.6 Atomic Database Backup
-`POST /api/backup`
-Uses SQLite `VACUUM INTO` to create a zero-downtime atomic backup file on disk:
-```json
-{
-  "status": "success",
-  "backup_file": "/var/lib/smart-water/backup_20261012_015000.db"
-}
-```
+### 2.6 Atomic Database Backup & Download
+- `POST /api/backup`: Uses SQLite `VACUUM INTO` to create a zero-downtime atomic backup file on disk.
+- `GET /api/backup/download`: Downloads the latest database snapshot as a binary stream (`application/vnd.sqlite3`). Authenticated via `Authorization: Bearer <token>`. The Web UI downloads this via `fetch()`, builds an in-memory `Blob`, and triggers download.
+- CLI Restoration: `python -m app.cli restore <backup.db>` (validates SQLite magic header before replacing `/var/lib/smart-water/system.db`).
 
 ---
 

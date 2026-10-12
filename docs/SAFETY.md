@@ -64,6 +64,9 @@ Two taps feed optocoupler inputs `IN3` (`interlock_mid`) and `IN2` (`interlock_o
 4. **Conductive Leak Detection Guard:**
    - Monitored at `IN4` (PC817 Opto 4).
    - If water is detected around the pump manifold, the contactor and all garden pumps are immediately de-energized.
+5. **Motor Electrical Sizing & Overload Protection:**
+   - A qualified electrician must size the circuit breaker (MCB), supply cabling, and motor overload protection relay strictly from the pump motor nameplate Full Load Current (FLC).
+   - The AC contactor switching contacts must be sized for inductive motor starting duty (AC-3 rating >= motor FLC).
 
 ---
 
@@ -76,13 +79,13 @@ Two taps feed optocoupler inputs `IN3` (`interlock_mid`) and `IN2` (`interlock_o
    - Prevents DC bus voltage drops and battery brownouts on solar/battery installations.
    - Starting a third pump is rejected until an active pump finishes.
 3. **Reservoir Dry-Run Lockout:**
-   - Sourced from reed float switch on GPIO 3 of the garden node.
+   - Sourced from reed float switch on GPIO 5 of the garden node.
    - If `reservoir_wet == false`, DC pumps are locked out to protect impellers.
 4. **Probe Sanity Band Filtering:**
    - Capacitive probes must read within `[wet_v - margin .. dry_v + margin]` (typically 0.8V to 3.0V).
    - Voltages outside this band indicate disconnected probes, corroded traces, or shorts to 3.3V/GND. Irrigation is blocked.
 5. **Zone 1 Pulse Flow Meter Verification (10-Second Check):**
-   - If Zone 1 runs for 10 seconds and accumulates fewer than 4 flow pulses, the system declares `NO FLOW DETECTED`.
+   - If Zone 1 runs for 10 seconds and accumulates fewer than `min_pulses_10s` (configured in config, default 5 pulses), the system declares `NO FLOW DETECTED`.
    - The pump is killed immediately, the zone is locked, and a voice alert sounds.
 6. **Root Rot Cooldown Protection (6 Hours):**
    - To prevent over-watering and root rot, automated watering cannot trigger on the same zone more than once every 6 hours.

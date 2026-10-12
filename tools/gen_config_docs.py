@@ -246,6 +246,8 @@ def generate_markdown() -> str:
         "    max_pulse_seconds: 60",
         "    cooldown_hours: 6.0",
         "    has_flow_meter: true",
+        "    flow_meter_model: \"YF-S201\"",
+        "    flow_k_factor: 7.5",
         "    min_pulses_10s: 5",
         "    calibration:",
         "      dry_v: null",
