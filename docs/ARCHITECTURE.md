@@ -154,3 +154,13 @@ Safety is structured in two non-negotiable layers:
 | **systemd cgroup Bounds** | `MemoryHigh=128M`, `MemoryMax=200M` | Service automatically throttles if crossing 128 MB and restarts safely if exceeding 200 MB |
 | **Database Memory** | ~2 MB Page Cache | SQLite WAL mode with `PRAGMA cache_size = -2000` |
 | **UI Delivery** | Vanilla HTML5 + Alpine.js | Zero build step, static asset streaming, strict Content Security Policy (`'self'`) |
+
+---
+
+## 5. Storage, Updates & Backup Architecture
+
+- **A/B Partition Layout**: Binary slots `/opt/smart-water-a` and `/opt/smart-water-b` connected via `/opt/smart-water` symlink. Upgrades via `python -m app.cli update --from <tarball>` verify SHA-256 integrity, restart systemd, test `/healthz`, and automatically roll back on failure.
+- **Read-Only Root**: Supported via `overlayroot` and `log2ram` with persistent mutable data segregated into `/var/lib/smart-water`.
+- **Database Durability**: SQLite with `PRAGMA journal_mode = WAL;`, `PRAGMA busy_timeout = 5000;`, and `PRAGMA synchronous = NORMAL;`. Daily atomic `VACUUM INTO` backups with 7-day retention and optional `rclone` cloud replication.
+- **Garden Node Firmware Policy**: Unsigned or single-partition OTA over ESP-NOW is strictly **out of scope**; firmware updates require physical USB-UART flashing via PlatformIO. See [STORAGE_READONLY.md](file:///c:/Users/TEST/rockpi-water-level-flow -automation/docs/STORAGE_READONLY.md).
+

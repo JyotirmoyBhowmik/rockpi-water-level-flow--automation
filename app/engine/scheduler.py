@@ -259,12 +259,16 @@ class SystemScheduler:
                 await asyncio.sleep(5.0)
 
     async def _data_purge_loop(self) -> None:
-        """Daily loop: Purges database records older than configured retention and dispatches summary."""
+        """Daily loop: Purges database records older than configured retention, runs backup, and dispatches summary."""
         while self._running:
             try:
                 await asyncio.sleep(86400)
                 await state_manager.purge_old_data()
                 logger.info("Database historical data retention purge executed.")
+                try:
+                    await state_manager.run_nightly_backup()
+                except Exception as bkp_err:
+                    logger.error("Error running nightly database backup: %s", bkp_err)
                 try:
                     from app.engine.daily_summary import daily_summary_service
                     await daily_summary_service.dispatch_daily_summary()

@@ -16,6 +16,7 @@ NC='\033[0m'
 
 DRY_RUN=false
 UNINSTALL_KEEP_DATA=false
+OVERLAYROOT_MODE=false
 
 usage() {
     cat << EOF
@@ -24,6 +25,7 @@ Usage: sudo ./install.sh [OPTIONS]
 Options:
   --dry-run               Run preflight checks and show actions without changing system
   --uninstall-keep-data   Remove service, binaries, and udev rules while preserving database and config
+  --overlayroot           Check and prepare for read-only root with persistent /var/lib/smart-water
   -h, --help              Show this help message
 EOF
     exit 0
@@ -37,6 +39,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --uninstall-keep-data)
             UNINSTALL_KEEP_DATA=true
+            shift
+            ;;
+        --overlayroot)
+            OVERLAYROOT_MODE=true
             shift
             ;;
         -h|--help)
@@ -58,6 +64,8 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+SLOT_A="/opt/smart-water-a"
+SLOT_B="/opt/smart-water-b"
 INSTALL_DIR="/opt/smart-water"
 CONFIG_DIR="/etc/smart-water"
 DATA_DIR="/var/lib/smart-water"
@@ -192,6 +200,30 @@ else
 fi
 
 # ------------------------------------------------------------------------------
+# Preflight Check 6: Storage & Overlayroot Checks
+# ------------------------------------------------------------------------------
+echo -e "${GREEN}[PREFLIGHT] Checking filesystem & storage configuration...${NC}"
+if [[ "${OVERLAYROOT_MODE}" == "true" ]]; then
+    echo -e "  ${YELLOW}[INFO]${NC} Overlayroot mode enabled. Inspecting partition mounts..."
+    if command -v findmnt &>/dev/null; then
+        ROOT_SRC="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+        DATA_SRC="$(findmnt -n -o SOURCE "${DATA_DIR}" 2>/dev/null || true)"
+        if [[ -n "${DATA_SRC}" && "${DATA_SRC}" != "${ROOT_SRC}" ]]; then
+            echo -e "  ${GREEN}[OK]${NC} ${DATA_DIR} is mounted on dedicated partition (${DATA_SRC})."
+        else
+            echo -e "  ${YELLOW}[WARN]${NC} ${DATA_DIR} resides on the root filesystem (${ROOT_SRC:-/})."
+            echo -e "         To run with a read-only root, ensure ${DATA_DIR} is in /etc/fstab"
+            echo -e "         on a dedicated writable ext4 partition before enabling overlayroot."
+        fi
+    fi
+    if command -v log2ram &>/dev/null; then
+        echo -e "  ${GREEN}[OK]${NC} log2ram detected for zram/tmpfs journal caching."
+    else
+        echo -e "  ${YELLOW}[INFO]${NC} log2ram not detected. Recommended for flash longevity: https://github.com/azlux/log2ram"
+    fi
+fi
+
+# ------------------------------------------------------------------------------
 # Dry-Run Exit
 # ------------------------------------------------------------------------------
 if [[ "${DRY_RUN}" == "true" ]]; then
@@ -231,6 +263,10 @@ apt-get install -y --no-install-recommends \
     curl \
     ca-certificates
 
+if [[ "${OVERLAYROOT_MODE}" == "true" ]]; then
+    apt-get install -y --no-install-recommends overlayroot || true
+fi
+
 # Tailscale setup for private secure mesh
 if ! command -v tailscale &> /dev/null; then
     echo -e "${YELLOW}[INFO] Installing Tailscale mesh client for secure remote access...${NC}"
@@ -252,17 +288,29 @@ fi
 usermod -aG gpio,i2c,dialout,audio smartwater
 
 # ------------------------------------------------------------------------------
-# 3. Directory Structure & Permissions (DATA_DIR created 0750 BEFORE rotate-token)
+# 3. Directory Structure & Permissions (A/B layout, backups, and DATA_DIR)
 # ------------------------------------------------------------------------------
-echo -e "${GREEN}[3/8] Preparing directory structure and permissions...${NC}"
-mkdir -p "${INSTALL_DIR}"
+echo -e "${GREEN}[3/8] Preparing directory structure and permissions (A/B layout)...${NC}"
+mkdir -p "${SLOT_A}"
 mkdir -p "${CONFIG_DIR}"
 mkdir -p "${DATA_DIR}"
+mkdir -p "${DATA_DIR}/backups"
 mkdir -p /run/smart-water
 
-# Ownership and strict 0750 permissions for DATA_DIR before token generation
+# Provision /opt/smart-water symlink to active slot /opt/smart-water-a
+if [[ ! -L "${INSTALL_DIR}" ]]; then
+    if [[ -d "${INSTALL_DIR}" && "${INSTALL_DIR}" != "${SLOT_A}" ]]; then
+        cp -ru "${INSTALL_DIR}/"* "${SLOT_A}/" 2>/dev/null || true
+        rm -rf "${INSTALL_DIR}"
+    fi
+    ln -sfn "${SLOT_A}" "${INSTALL_DIR}"
+fi
+
+# Ownership and strict permissions
 chown smartwater:smartwater "${DATA_DIR}"
 chmod 0750 "${DATA_DIR}"
+chown smartwater:smartwater "${DATA_DIR}/backups"
+chmod 0700 "${DATA_DIR}/backups"
 
 if [[ ! -f "${DATA_DIR}/install_timestamp" ]]; then
     date +%s > "${DATA_DIR}/install_timestamp"

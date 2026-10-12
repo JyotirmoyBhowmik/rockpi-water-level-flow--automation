@@ -11,7 +11,9 @@ import asyncio
 from datetime import datetime, timezone
 import json
 import logging
+import os
 from pathlib import Path
+import shutil
 import sqlite3
 import time
 from typing import Any, Dict, Iterator, List, Optional, cast
@@ -623,6 +625,7 @@ class StateManager:
         conn = sqlite3.connect(str(self.db_path), timeout=5.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute(f"PRAGMA busy_timeout = {system_config.database.busy_timeout_ms};")
         conn.execute(f"PRAGMA cache_size = {system_config.database.cache_size_kb};")
         conn.execute("PRAGMA synchronous = NORMAL;")
         conn.execute("PRAGMA temp_store = MEMORY;")
@@ -942,6 +945,99 @@ class StateManager:
     async def purge_old_data(self) -> int:
         """Alias for purge_by_retention."""
         return await self.purge_by_retention()
+
+    async def run_nightly_backup(self, keep_days: Optional[int] = None) -> Optional[Path]:
+        """
+        Executes an atomic SQLite backup via `VACUUM INTO '<backup_path>'`,
+        enforces 0600 file permissions, prunes backups older than `keep_days` (default: 7),
+        and optionally pushes to remote cloud storage via rclone if configured.
+        """
+        backup_dir = Path(system_config.database.backup_dir)
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(backup_dir, 0o700)
+            except OSError:
+                pass
+        except Exception as exc:
+            logger.error("Failed to create database backup directory '%s': %s", backup_dir, exc)
+            return None
+
+        now_utc = datetime.now(timezone.utc)
+        filename = f"smart_water_backup_{now_utc.strftime('%Y%m%d_%H%M%S')}.db"
+        backup_path = backup_dir / filename
+
+        def _vacuum() -> None:
+            with self._get_connection() as conn:
+                escaped_path = str(backup_path).replace("'", "''")
+                conn.execute(f"VACUUM INTO '{escaped_path}';")
+            try:
+                os.chmod(backup_path, 0o600)
+            except OSError:
+                pass
+
+        try:
+            await asyncio.to_thread(_vacuum)
+            logger.info("Created atomic SQLite backup at %s", backup_path)
+        except Exception as exc:
+            logger.error("Failed to create SQLite VACUUM INTO backup at '%s': %s", backup_path, exc)
+            return None
+
+        # Rotate/prune old backups
+        retention = keep_days if keep_days is not None else system_config.database.backup_retention_days
+        cutoff = time.time() - (retention * 86400)
+        try:
+            backups = sorted(backup_dir.glob("smart_water_backup_*.db"), key=lambda p: p.stat().st_mtime)
+            # Retain at least the most recent backup
+            for old_bkp in backups[:-1]:
+                if old_bkp.stat().st_mtime < cutoff:
+                    try:
+                        old_bkp.unlink()
+                        logger.info("Pruned old database backup: %s", old_bkp.name)
+                    except OSError as oerr:
+                        logger.warning("Could not prune old backup %s: %s", old_bkp, oerr)
+        except Exception as rot_exc:
+            logger.warning("Error during database backup rotation: %s", rot_exc)
+
+        # Optional rclone push
+        remote = system_config.database.rclone_remote
+        if remote:
+            rclone_bin = shutil.which("rclone")
+            if not rclone_bin:
+                logger.warning(
+                    "rclone_remote is configured ('%s') but 'rclone' executable was not found on PATH.",
+                    remote,
+                )
+            else:
+                try:
+                    cmd = [rclone_bin, "copy", str(backup_path), remote]
+                    logger.info("Pushing database backup to rclone destination: %s", remote)
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+                    if proc.returncode == 0:
+                        logger.info("Successfully pushed backup to rclone remote %s", remote)
+                    else:
+                        logger.error(
+                            "rclone push exited with code %d: %s",
+                            proc.returncode,
+                            stderr.decode().strip(),
+                        )
+                except asyncio.TimeoutError:
+                    logger.error("rclone push timed out after 120s for remote '%s'", remote)
+                except Exception as rerr:
+                    logger.error("Exception during rclone backup push: %s", rerr)
+
+        await self.log_event(
+            "database_backup",
+            "INFO",
+            f"Nightly database backup completed: {filename}",
+            {"backup_path": str(backup_path), "retention_days": retention},
+        )
+        return backup_path
 
 
 state_manager = StateManager()

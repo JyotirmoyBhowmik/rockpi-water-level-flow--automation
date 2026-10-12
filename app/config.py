@@ -331,9 +331,13 @@ class MQTTConfig(BaseModel):
 
 
 class DatabaseConfig(BaseModel):
-    path: str = Field(default_factory=lambda: str(DATA_DIR / "system.db"))
-    retention_days: int = Field(default=90, ge=7, le=730)
+    path: str = Field(default_factory=lambda: str(DATA_DIR / "system.db"), description="SQLite database file path")
+    retention_days: int = Field(default=90, ge=7, le=730, description="Retention window for historical telemetry in days")
     cache_size_kb: int = Field(default=-2000, description="PRAGMA cache_size (-2000 is ~2MB)")
+    busy_timeout_ms: int = Field(default=5000, ge=100, le=60000, description="SQLite busy_timeout in milliseconds (default 5000)")
+    backup_dir: str = Field(default="/var/lib/smart-water/backups", description="Directory storing nightly VACUUM INTO database backups")
+    backup_retention_days: int = Field(default=7, ge=1, le=90, description="Retention window for rotated SQLite database backups in days (default 7)")
+    rclone_remote: Optional[str] = Field(default=None, description="Optional rclone destination (e.g. 'gdrive:smart-water-backups') for remote backup sync")
 
 
 class WatchdogConfig(BaseModel):

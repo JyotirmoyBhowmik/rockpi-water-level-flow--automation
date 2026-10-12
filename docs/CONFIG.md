@@ -483,9 +483,13 @@ Configures SQLite WAL storage path, PRAGMA cache memory allocation, and historic
 
 | Field | Type | Default | Constraints | Description |
 |---|---|---|---|---|
-| `path` | `str` | `\var\lib\smart-water\system.db` | - | - |
-| `retention_days` | `int` | `90` | >= 7, <= 730 | - |
+| `path` | `str` | `\var\lib\smart-water\system.db` | - | SQLite database file path |
+| `retention_days` | `int` | `90` | >= 7, <= 730 | Retention window for historical telemetry in days |
 | `cache_size_kb` | `int` | `-2000` | - | PRAGMA cache_size (-2000 is ~2MB) |
+| `busy_timeout_ms` | `int` | `5000` | >= 100, <= 60000 | SQLite busy_timeout in milliseconds (default 5000) |
+| `backup_dir` | `str` | `/var/lib/smart-water/backups` | - | Directory storing nightly VACUUM INTO database backups |
+| `backup_retention_days` | `int` | `7` | >= 1, <= 90 | Retention window for rotated SQLite database backups in days (default 7) |
+| `rclone_remote` | `Optional[str]` | `null` | - | Optional rclone destination (e.g. 'gdrive:smart-water-backups') for remote backup sync |
 
 ### WatchdogConfig (`watchdog`)
 

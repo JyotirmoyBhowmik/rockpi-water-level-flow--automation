@@ -123,3 +123,19 @@ Upon receiving `SIGINT`, `SIGTERM`, or an unhandled Python exception:
 1. `head_end_gpio.force_all_outputs_off()` drives the contactor relay LOW immediately.
 2. `garden_gateway.send_stop_all()` transmits an emergency stop packet over ESP-NOW.
 3. Watchdog loop terminates cleanly.
+
+---
+
+## 7. Storage Safety & Firmware Flashing Policy
+
+### 7.1 Database Integrity & Power-Cut Resilience
+- **SQLite WAL Mode**: `PRAGMA journal_mode = WAL;` with `PRAGMA synchronous = NORMAL;` and `PRAGMA busy_timeout = 5000;`. Guarantees zero file corruption on unexpected power outages while reducing flash wear.
+- **Nightly Atomic Backups**: Every 24 hours, `VACUUM INTO` creates an atomic backup with a 7-day rotation window and optional cloud sync via `rclone`.
+- **Read-Only Root**: Supported via `overlayroot` and `log2ram` with `/var/lib/smart-water` placed on a separate writable partition. See [STORAGE_READONLY.md](file:///c:/Users/TEST/rockpi-water-level-flow -automation/docs/STORAGE_READONLY.md).
+
+### 7.2 Garden Node ESP-NOW Firmware OTA Policy
+> [!CAUTION]
+> **FIRMWARE OTA OVER ESP-NOW IS STRICTLY OUT OF SCOPE.**
+> ESP-NOW action frames have a 250-byte payload limit. Unsigned or single-partition OTA introduces severe risks of bricked nodes or runaway irrigation actuators in the event of frame loss or tampering.
+> Node firmware flashing is restricted exclusively to physical USB-UART programming using PlatformIO. Any future OTA proposal must mandate `esp_https_ota`-style signed ECDSA binaries verified by the hardware bootloader with dual rollback partitions (`ota_0`, `ota_1`).
+
