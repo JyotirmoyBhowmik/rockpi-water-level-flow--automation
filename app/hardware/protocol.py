@@ -60,31 +60,38 @@ def format_flow_unsigned(nonce: int, seq: int, z: int, delta_pulses: int, period
     )
 
 
+def json_escape(s: str) -> str:
+    """Escapes string characters (quotes and backslashes) for canonical JSON embedding."""
+    if not s:
+        return ""
+    return json.dumps(str(s))[1:-1]
+
+
 def format_pump_unsigned(nonce: int, seq: int, z: int, on: bool, reason: str, run_s: int) -> str:
     on_str = "true" if on else "false"
     return (
         f'{{"v":"1.1","t":"pump","nonce":{nonce},"seq":{seq},"z":{z},'
-        f'"on":{on_str},"reason":"{reason}","run_s":{run_s}}}'
+        f'"on":{on_str},"reason":"{json_escape(reason)}","run_s":{run_s}}}'
     )
 
 
 def format_ack_unsigned(nonce: int, seq: int, id_str: str, status: str, err: str = "") -> str:
     return (
         f'{{"v":"1.1","t":"ack","nonce":{nonce},"seq":{seq},'
-        f'"id":"{id_str}","status":"{status}","err":"{err}"}}'
+        f'"id":"{json_escape(id_str)}","status":"{json_escape(status)}","err":"{json_escape(err)}"}}'
     )
 
 
 def format_cmd_unsigned(nonce: int, seq: int, id_str: str, z: int, run_s: int) -> str:
-    return f'{{"v":"1.1","t":"cmd","nonce":{nonce},"seq":{seq},"id":"{id_str}","z":{z},"run_s":{run_s}}}'
+    return f'{{"v":"1.1","t":"cmd","nonce":{nonce},"seq":{seq},"id":"{json_escape(id_str)}","z":{z},"run_s":{run_s}}}'
 
 
 def format_stop_unsigned(nonce: int, seq: int, id_str: str, z: int) -> str:
-    return f'{{"v":"1.1","t":"stop","nonce":{nonce},"seq":{seq},"id":"{id_str}","z":{z}}}'
+    return f'{{"v":"1.1","t":"stop","nonce":{nonce},"seq":{seq},"id":"{json_escape(id_str)}","z":{z}}}'
 
 
 def format_stop_all_unsigned(nonce: int, seq: int, id_str: str) -> str:
-    return f'{{"v":"1.1","t":"stop_all","nonce":{nonce},"seq":{seq},"id":"{id_str}"}}'
+    return f'{{"v":"1.1","t":"stop_all","nonce":{nonce},"seq":{seq},"id":"{json_escape(id_str)}"}}'
 
 
 # ==============================================================================
@@ -298,20 +305,56 @@ PacketModel = Union[
 class SequenceTracker:
     """Tracks sequence numbers and random 32-bit boot nonces per sender session."""
 
-    def __init__(self):
+    def __init__(self, strict_nonce_verification: bool = False):
+        self.strict_nonce_verification: bool = strict_nonce_verification
         self.last_nonce: Optional[int] = None
         self.last_seq: int = -1
+        self.last_boot_count: Optional[int] = None
 
-    def validate_and_update(self, seq: int, nonce: Optional[int] = None) -> Tuple[bool, Optional[str]]:
+    def validate_and_update(
+        self,
+        seq: int,
+        nonce: Optional[int] = None,
+        boot_count: Optional[int] = None,
+    ) -> Tuple[bool, Optional[str]]:
         """
         Validates monotonic sequence number.
-        If a new boot nonce is received, recognizes a fresh session and resets sequence tracking.
+        If a new boot nonce is received:
+          - In standard mode (strict_nonce_verification=False): accepts new session and resets sequence tracking.
+          - In strict mode (strict_nonce_verification=True): rejects new nonce unless accompanied by boot announcement
+            (seq == 1) or a monotonically increasing boot counter (boot_count > last_boot_count).
         """
         if nonce is not None:
-            if self.last_nonce is None or nonce != self.last_nonce:
-                # Fresh boot session detected: accept and reset
+            if self.last_nonce is None:
+                # First session observed
                 self.last_nonce = nonce
                 self.last_seq = seq
+                if boot_count is not None:
+                    self.last_boot_count = boot_count
+                return True, None
+
+            if nonce != self.last_nonce:
+                # Fresh boot session requested
+                if self.strict_nonce_verification:
+                    valid_boot = False
+                    if seq == 1:
+                        valid_boot = True
+                    elif boot_count is not None and (
+                        self.last_boot_count is None or boot_count > self.last_boot_count
+                    ):
+                        valid_boot = True
+
+                    if not valid_boot:
+                        return (
+                            False,
+                            f"Strict nonce rejection: new nonce {nonce} requires boot announcement (seq=1 or monotonic boot_count, got seq={seq}, boot_count={boot_count})",
+                        )
+
+                # Reset to new session
+                self.last_nonce = nonce
+                self.last_seq = seq
+                if boot_count is not None:
+                    self.last_boot_count = boot_count
                 return True, None
 
         # Same session: sequence must be strictly increasing
@@ -371,9 +414,10 @@ def parse_and_validate_packet(
     if seq_tracker is not None:
         seq = data.get("seq")
         nonce = data.get("nonce")
+        boot_count = data.get("boot_count") or data.get("boot")
         if seq is None or not isinstance(seq, int):
             return None, "Missing integer sequence number"
-        ok, reason = seq_tracker.validate_and_update(seq, nonce)
+        ok, reason = seq_tracker.validate_and_update(seq, nonce, boot_count=boot_count)
         if not ok:
             return None, f"Sequence validation failed: {reason}"
 

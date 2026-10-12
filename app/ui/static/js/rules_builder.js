@@ -1,7 +1,20 @@
 /**
  * Visual Low-Code Rule Builder for Radxa Smart Water.
  * Zero pre-seeded templates. Allows saving custom rules as reusable templates in SQLite.
+ * Strict CSP compliant: Zero inline handlers, strict HTML escaping.
  */
+
+function escapeHtml(str) {
+  if (str === null || str === undefined) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+window.escapeHtml = escapeHtml;
 
 window.RulesBuilder = {
   rules: [],
@@ -9,7 +22,9 @@ window.RulesBuilder = {
 
   getHeaders() {
     const headers = { "Content-Type": "application/json" };
-    const token = localStorage.getItem("smart_water_token");
+    const token =
+      sessionStorage.getItem("smart_water_token") ||
+      localStorage.getItem("smart_water_token");
     if (token) {
       headers["Authorization"] = `Bearer ${token}`;
     }
@@ -17,11 +32,68 @@ window.RulesBuilder = {
   },
 
   async init() {
+    this.bindDelegatedEvents();
     await this.fetchTemplates();
     await this.fetchRules();
     this.renderTemplates();
     this.renderRulesList();
     this.resetEditorForm();
+  },
+
+  bindDelegatedEvents() {
+    // Template container actions
+    const tplContainer = document.getElementById("template-cards-container");
+    if (tplContainer) {
+      tplContainer.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-action]");
+        if (!btn) return;
+        const action = btn.getAttribute("data-action");
+        const tplId = btn.getAttribute("data-template-id");
+        if (action === "delete-template" && tplId) {
+          this.deleteTemplate(tplId);
+        } else if (action === "load-template" && tplId) {
+          this.loadTemplate(tplId);
+        }
+      });
+    }
+
+    // Rules list container actions
+    const rulesContainer = document.getElementById("active-rules-container");
+    if (rulesContainer) {
+      rulesContainer.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-action]");
+        if (!btn) return;
+        const action = btn.getAttribute("data-action");
+        const ruleId = btn.getAttribute("data-rule-id");
+        if (action === "save-template" && ruleId) {
+          this.promptSaveTemplate(ruleId);
+        } else if (action === "toggle-rule" && ruleId) {
+          this.toggleRule(ruleId);
+        } else if (action === "delete-rule" && ruleId) {
+          this.deleteRule(ruleId);
+        }
+      });
+    }
+
+    // Row removal delegation
+    document.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-action='remove-row']");
+      if (!btn) return;
+      const targetId = btn.getAttribute("data-target-id");
+      if (targetId) {
+        const row = document.getElementById(targetId);
+        if (row) row.remove();
+      }
+    });
+
+    // Form submit
+    const form = document.getElementById("rule-editor-form");
+    if (form) {
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        this.saveCurrentRule();
+      });
+    }
   },
 
   async fetchRules() {
@@ -66,11 +138,11 @@ window.RulesBuilder = {
         (tpl) => `
       <div class="card" style="border-left: 4px solid var(--accent-blue);">
         <div class="flex items-center justify-between">
-          <div style="font-weight: 700; font-size: 13px; color: var(--text-primary);">${tpl.name}</div>
-          <button class="btn btn-secondary btn-sm" onclick="RulesBuilder.deleteTemplate('${tpl.id}')" title="Delete Template">✕</button>
+          <div style="font-weight: 700; font-size: 13px; color: var(--text-primary);">${escapeHtml(tpl.name)}</div>
+          <button class="btn btn-secondary btn-sm" data-action="delete-template" data-template-id="${escapeHtml(tpl.id)}" title="Delete Template">✕</button>
         </div>
-        <div style="font-size: 11px; color: var(--text-secondary); margin: 6px 0;">${tpl.description || "User-saved template"}</div>
-        <button class="btn btn-secondary btn-sm" onclick="RulesBuilder.loadTemplate('${tpl.id}')" type="button">Apply Template</button>
+        <div style="font-size: 11px; color: var(--text-secondary); margin: 6px 0;">${escapeHtml(tpl.description || "User-saved template")}</div>
+        <button class="btn btn-secondary btn-sm" data-action="load-template" data-template-id="${escapeHtml(tpl.id)}" type="button">Apply Template</button>
       </div>
     `
       )
@@ -81,7 +153,7 @@ window.RulesBuilder = {
     const tpl = this.templates.find((t) => t.id === tplId);
     if (!tpl) return;
 
-    document.getElementById("rule-name-input").value = tpl.name;
+    document.getElementById("rule-name-input").value = tpl.name || "";
     document.getElementById("rule-combinator-select").value = tpl.combinator || "AND";
 
     const condContainer = document.getElementById("conditions-container");
@@ -111,16 +183,16 @@ window.RulesBuilder = {
     container.innerHTML = this.rules
       .map((r) => {
         const condText = (r.conditions || [])
-          .map((c) => `<strong>${c.source}</strong> ${c.operator} <em>${c.value}</em>`)
-          .join(` <span class="badge badge-gray">${r.combinator || "AND"}</span> `);
+          .map((c) => `<strong>${escapeHtml(c.source)}</strong> ${escapeHtml(c.operator)} <em>${escapeHtml(c.value)}</em>`)
+          .join(` <span class="badge badge-gray">${escapeHtml(r.combinator || "AND")}</span> `);
 
         const actText = (r.actions || [])
           .map((a) => {
-            if (a.target === "voice.announce") return `Voice: "${a.speech_text}"`;
-            if (a.target === "telegram.send") return `Telegram: "${a.message}"`;
+            if (a.target === "voice.announce") return `Voice: &quot;${escapeHtml(a.speech_text)}&quot;`;
+            if (a.target === "telegram.send") return `Telegram: &quot;${escapeHtml(a.message)}&quot;`;
             if (a.target === "motor.start") return `Motor: START`;
             if (a.target === "motor.stop") return `Motor: STOP`;
-            return `Water <strong>${a.target}</strong> (${a.duration_seconds}s)`;
+            return `Water <strong>${escapeHtml(a.target)}</strong> (${escapeHtml(a.duration_seconds)}s)`;
           })
           .join(" + ");
 
@@ -129,16 +201,16 @@ window.RulesBuilder = {
           <div class="flex items-center justify-between" style="margin-bottom: 0.5rem;">
             <div class="flex items-center gap-2">
               <span class="badge ${r.enabled ? "badge-green" : "badge-gray"}">${r.enabled ? "ACTIVE" : "DISABLED"}</span>
-              <span style="font-weight: 700; font-size: 14px;">${r.name}</span>
+              <span style="font-weight: 700; font-size: 14px;">${escapeHtml(r.name)}</span>
             </div>
             <div class="flex items-center gap-2">
-              <button class="btn btn-secondary btn-sm" onclick="RulesBuilder.promptSaveTemplate('${r.id}')" title="Save this rule as reusable template">
+              <button class="btn btn-secondary btn-sm" data-action="save-template" data-rule-id="${escapeHtml(r.id)}" title="Save this rule as reusable template">
                 ⭐ Save Template
               </button>
-              <button class="btn btn-secondary btn-sm" onclick="RulesBuilder.toggleRule('${r.id}')">
+              <button class="btn btn-secondary btn-sm" data-action="toggle-rule" data-rule-id="${escapeHtml(r.id)}">
                 ${r.enabled ? "Disable" : "Enable"}
               </button>
-              <button class="btn btn-danger btn-sm" onclick="RulesBuilder.deleteRule('${r.id}')">
+              <button class="btn btn-danger btn-sm" data-action="delete-rule" data-rule-id="${escapeHtml(r.id)}">
                 Delete
               </button>
             </div>
@@ -171,6 +243,7 @@ window.RulesBuilder = {
         <option value="leak.state" ${source === "leak.state" ? "selected" : ""}>Leak Sensor Tripped (True/False)</option>
         <option value="link.state" ${source === "link.state" ? "selected" : ""}>Garden Link State (online/offline)</option>
         <option value="time.clock" ${source === "time.clock" ? "selected" : ""}>Time Clock (HH:MM)</option>
+        <option value="time.minutes" ${source === "time.minutes" ? "selected" : ""}>Time Minutes (0-1439)</option>
         <option value="zone_1.moisture" ${source === "zone_1.moisture" ? "selected" : ""}>Zone 1 Soil Moisture (%)</option>
         <option value="zone_2.moisture" ${source === "zone_2.moisture" ? "selected" : ""}>Zone 2 Soil Moisture (%)</option>
         <option value="zone_3.moisture" ${source === "zone_3.moisture" ? "selected" : ""}>Zone 3 Soil Moisture (%)</option>
@@ -185,9 +258,10 @@ window.RulesBuilder = {
         <option value=">" ${operator === ">" ? "selected" : ""}>&gt; Greater Than</option>
         <option value="==" ${operator === "==" ? "selected" : ""}>== Equals</option>
         <option value="!=" ${operator === "!=" ? "selected" : ""}>!= Not Equals</option>
+        <option value="between" ${operator === "between" ? "selected" : ""}>between Window</option>
       </select>
-      <input type="text" class="form-input cond-value" style="flex: 1;" value="${value}" placeholder="Value" />
-      <button class="btn btn-secondary btn-sm" type="button" onclick="document.getElementById('${rowId}').remove()">✕</button>
+      <input type="text" class="form-input cond-value" style="flex: 1;" value="${escapeHtml(value)}" placeholder="Value" />
+      <button class="btn btn-secondary btn-sm" type="button" data-action="remove-row" data-target-id="${rowId}">✕</button>
     `;
     container.appendChild(div);
   },
@@ -202,7 +276,7 @@ window.RulesBuilder = {
     div.className = "flex items-center gap-2";
     div.style.marginBottom = "0.5rem";
     div.innerHTML = `
-      <select class="form-select act-target" style="flex: 2;" onchange="RulesBuilder.onTargetChanged('${rowId}', this.value)">
+      <select class="form-select act-target" style="flex: 2;">
         <option value="pump.zone_1" ${target === "pump.zone_1" ? "selected" : ""}>Water Zone 1 (ESP32 DC Pump)</option>
         <option value="pump.zone_2" ${target === "pump.zone_2" ? "selected" : ""}>Water Zone 2 (ESP32 DC Pump)</option>
         <option value="pump.zone_3" ${target === "pump.zone_3" ? "selected" : ""}>Water Zone 3 (ESP32 DC Pump)</option>
@@ -215,8 +289,17 @@ window.RulesBuilder = {
       <div id="${rowId}-params" style="flex: 3;" class="flex gap-2">
         ${this.renderTargetParams(target, duration, speech, message)}
       </div>
-      <button class="btn btn-secondary btn-sm" type="button" onclick="document.getElementById('${rowId}').remove()">✕</button>
+      <button class="btn btn-secondary btn-sm" type="button" data-action="remove-row" data-target-id="${rowId}">✕</button>
     `;
+
+    // Listen to target select changes without inline onchange
+    const selectEl = div.querySelector(".act-target");
+    if (selectEl) {
+      selectEl.addEventListener("change", (e) => {
+        this.onTargetChanged(rowId, e.target.value);
+      });
+    }
+
     container.appendChild(div);
   },
 
@@ -229,16 +312,16 @@ window.RulesBuilder = {
 
   renderTargetParams(target, duration = 15, speech = "", message = "") {
     if (target === "voice.announce") {
-      return `<input type="text" class="form-input act-speech" placeholder="Announcement phrase..." value="${speech || ""}" style="width: 100%;" />`;
+      return `<input type="text" class="form-input act-speech" placeholder="Announcement phrase..." value="${escapeHtml(speech || "")}" style="width: 100%;" />`;
     }
     if (target === "telegram.send") {
-      return `<input type="text" class="form-input act-message" placeholder="Telegram message text..." value="${message || ""}" style="width: 100%;" />`;
+      return `<input type="text" class="form-input act-message" placeholder="Telegram message text..." value="${escapeHtml(message || "")}" style="width: 100%;" />`;
     }
     if (target === "motor.start" || target === "motor.stop") {
       return `<span style="font-size: 11px; color: var(--text-muted); align-self: center;">Obeys all hardware interlocks</span>`;
     }
     return `
-      <input type="number" class="form-input act-duration" placeholder="Seconds" value="${duration || 15}" min="1" max="60" style="flex: 1;" />
+      <input type="number" class="form-input act-duration" placeholder="Seconds" value="${escapeHtml(duration || 15)}" min="1" max="60" style="flex: 1;" />
       <span style="font-size: 11px; color: var(--text-muted); align-self: center;">seconds (max 60s)</span>
     `;
   },

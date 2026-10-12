@@ -245,7 +245,7 @@ async def test_webhook_ssrf_async_thread_offload(monkeypatch):
 
     async def mock_to_thread(func, *args, **kwargs):
         thread_calls.append((func.__name__, args))
-        return (False, "SSRF blocked for testing")
+        return (False, "SSRF blocked for testing", None)
 
     monkeypatch.setattr(asyncio, "to_thread", mock_to_thread)
 
@@ -253,5 +253,5 @@ async def test_webhook_ssrf_async_thread_offload(monkeypatch):
 
     assert len(thread_calls) == 1
     func_name, args = thread_calls[0]
-    assert func_name == "validate_webhook_url"
+    assert func_name == "resolve_and_validate_webhook_url"
     assert args[0] == "https://example.com/webhook"

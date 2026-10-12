@@ -23,6 +23,8 @@ class TelegramNotifier:
         self._running = False
         self._worker_task: Optional[asyncio.Task] = None
         self._max_queue = max_queue
+        self._client: Optional[httpx.AsyncClient] = None
+        self._owns_client = False
 
     async def start(self) -> None:
         if self._running:
@@ -31,17 +33,21 @@ class TelegramNotifier:
             logger.info("Telegram alerting is disabled in configuration.")
             return
 
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=6.0)
+            self._owns_client = True
+
         self._queue = asyncio.Queue(maxsize=self._max_queue)
         self._running = True
         self._worker_task = asyncio.create_task(self._delivery_worker(), name="telegram_worker")
         logger.info("Telegram notification worker started.")
 
     async def send_alert(self, event_type: str, message: str) -> None:
-        """Enqueues an alert message for transmission."""
+        """Enqueues an alert message for transmission (plain text, no parse_mode)."""
         if not self._running or self._queue is None:
             return
 
-        formatted = f"🚨 *[SMART WATER ALERT]*\n*Event:* `{event_type}`\n*Message:* {message}"
+        formatted = f"🚨 [SMART WATER ALERT]\nEvent: {event_type}\nMessage: {message}"
         try:
             self._queue.put_nowait(formatted)
         except asyncio.QueueFull:
@@ -68,27 +74,52 @@ class TelegramNotifier:
                     break
                 text = await self._queue.get()
 
-                # Attempt delivery with exponential backoff
+                # Attempt delivery with exponential backoff and rate limit handling
                 backoff = 2.0
                 delivered = False
                 for attempt in range(4):
                     try:
-                        async with httpx.AsyncClient(timeout=6.0) as client:
-                            resp = await client.post(
-                                url,
-                                json={
-                                    "chat_id": chat_id,
-                                    "text": text,
-                                    "parse_mode": "Markdown",
-                                },
+                        client = self._client or httpx.AsyncClient(timeout=6.0)
+                        resp = await client.post(
+                            url,
+                            json={
+                                "chat_id": chat_id,
+                                "text": text,
+                            },
+                        )
+                        if resp.status_code == 200:
+                            delivered = True
+                            break
+                        elif resp.status_code == 429:
+                            retry_after = 5.0
+                            try:
+                                data = resp.json()
+                                retry_after = float(data.get("parameters", {}).get("retry_after", 5.0))
+                            except Exception:
+                                pass
+                            logger.warning(
+                                "Telegram rate limited (429). Retrying after %.1fs (attempt %d/4)",
+                                retry_after,
+                                attempt + 1,
                             )
-                            if resp.status_code == 200:
-                                delivered = True
-                                break
-                            else:
-                                logger.error("Telegram API rejected message (status %d): %s", resp.status_code, resp.text)
+                            await asyncio.sleep(retry_after)
+                        else:
+                            logger.error(
+                                "Telegram API error (status %d): %s. Backing off %.1fs (attempt %d/4)",
+                                resp.status_code,
+                                resp.text,
+                                backoff,
+                                attempt + 1,
+                            )
+                            await asyncio.sleep(backoff)
+                            backoff *= 2.0
                     except Exception as net_err:
-                        logger.warning("Telegram delivery attempt %d failed: %s. Retrying in %.1fs", attempt + 1, net_err, backoff)
+                        logger.warning(
+                            "Telegram delivery attempt %d failed: %s. Retrying in %.1fs",
+                            attempt + 1,
+                            net_err,
+                            backoff,
+                        )
                         await asyncio.sleep(backoff)
                         backoff *= 2.0
 
@@ -110,6 +141,9 @@ class TelegramNotifier:
                 await self._worker_task
             except asyncio.CancelledError:
                 pass
+        if self._owns_client and self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
         self._queue = None
 
 

@@ -25,16 +25,17 @@ window.CircuitSchematic = {
 
   showTooltip(e, el) {
     if (!this.tooltipEl) return;
+    const esc = window.escapeHtml || ((s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
     const title = el.getAttribute("data-node-title") || "Component";
     const pin = el.getAttribute("data-node-pin") || "Not configured";
     const desc = el.getAttribute("data-node-desc") || "";
     const state = el.getAttribute("data-node-state") || "No reading yet";
 
     this.tooltipEl.innerHTML = `
-      <div style="font-weight: 700; color: #38bdf8; margin-bottom: 2px;">${title}</div>
-      <div style="font-family: monospace; font-size: 11px; color: #94a3b8; margin-bottom: 4px;">Hardware: ${pin}</div>
-      <div style="font-size: 11px; margin-bottom: 4px;">${desc}</div>
-      <div style="display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; background: #1e293b; color: #e2e8f0;">State: ${state}</div>
+      <div style="font-weight: 700; color: #38bdf8; margin-bottom: 2px;">${esc(title)}</div>
+      <div style="font-family: monospace; font-size: 11px; color: #94a3b8; margin-bottom: 4px;">Hardware: ${esc(pin)}</div>
+      <div style="font-size: 11px; margin-bottom: 4px;">${esc(desc)}</div>
+      <div style="display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; background: #1e293b; color: #e2e8f0;">State: ${esc(state)}</div>
     `;
     this.tooltipEl.style.display = "block";
     this.moveTooltip(e);

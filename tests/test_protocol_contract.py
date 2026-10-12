@@ -115,7 +115,7 @@ def test_cpp_generated_packets_verified_by_python():
         check=True
     )
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-    assert len(lines) == 8, f"Expected 8 packets from C++ signer, got {len(lines)}"
+    assert len(lines) == 10, f"Expected 10 packets from C++ signer, got {len(lines)}"
 
     seq_tracker = SequenceTracker()
     parsed_packets = []
@@ -154,6 +154,15 @@ def test_cpp_generated_packets_verified_by_python():
     assert isinstance(parsed_packets[7], StopAllPacket)
     assert parsed_packets[7].id == "cmd-003"
 
+    assert isinstance(parsed_packets[8], PumpEventPacket)
+    assert parsed_packets[8].on is False
+    assert parsed_packets[8].reason == 'fault: "sensor" \\ timeout'
+
+    assert isinstance(parsed_packets[9], AckPacket)
+    assert parsed_packets[9].id == 'cmd:"001"\\test'
+    assert parsed_packets[9].status == "err"
+    assert parsed_packets[9].err == 'err: "timeout" \\ fault'
+
 
 def test_python_generated_packets_verified_by_cpp():
     """
@@ -162,7 +171,7 @@ def test_python_generated_packets_verified_by_cpp():
     """
     cpp_exe = get_or_compile_cpp_binary()
 
-    # Create one packet of each type in Python
+    # Create one packet of each type in Python (including escaped quotes/slashes)
     nonce = 5555
     python_packets = [
         sign_packet_string(format_hb_unsigned(nonce, 1, 300, True, True, [0, 1, 0, 0], 0, -60), SHARED_KEY),
@@ -173,6 +182,8 @@ def test_python_generated_packets_verified_by_cpp():
         sign_packet_string(format_cmd_unsigned(nonce, 6, "cmd-100", 3, 20), SHARED_KEY),
         sign_packet_string(format_stop_unsigned(nonce, 7, "cmd-101", 3), SHARED_KEY),
         sign_packet_string(format_stop_all_unsigned(nonce, 8, "cmd-102"), SHARED_KEY),
+        sign_packet_string(format_pump_unsigned(nonce, 9, 1, False, 'fault: "sensor" \\ timeout', 10), SHARED_KEY),
+        sign_packet_string(format_ack_unsigned(nonce, 10, 'cmd:"001"\\test', "err", 'err: "timeout" \\ fault'), SHARED_KEY),
     ]
 
     stdin_input = "".join(python_packets)

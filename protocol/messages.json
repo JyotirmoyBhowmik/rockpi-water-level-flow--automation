@@ -201,6 +201,22 @@
       "unsigned": "{\"v\":\"1.1\",\"t\":\"stop_all\",\"nonce\":2002,\"seq\":3,\"id\":\"cmd-003\"}",
       "sig": "73b8a1e4c99759a6",
       "signed_line": "{\"v\":\"1.1\",\"t\":\"stop_all\",\"nonce\":2002,\"seq\":3,\"id\":\"cmd-003\",\"sig\":\"73b8a1e4c99759a6\"}\n"
+    },
+    {
+      "name": "pump_escaped_strings_packet",
+      "t": "pump",
+      "secret_key": "test-secret-key-32-chars-long12345",
+      "unsigned": "{\"v\":\"1.1\",\"t\":\"pump\",\"nonce\":1001,\"seq\":6,\"z\":2,\"on\":false,\"reason\":\"fault: \\\"sensor\\\" \\\\ timeout\",\"run_s\":10}",
+      "sig": "4e8cbb79bffe9a54",
+      "signed_line": "{\"v\":\"1.1\",\"t\":\"pump\",\"nonce\":1001,\"seq\":6,\"z\":2,\"on\":false,\"reason\":\"fault: \\\"sensor\\\" \\\\ timeout\",\"run_s\":10,\"sig\":\"4e8cbb79bffe9a54\"}\n"
+    },
+    {
+      "name": "ack_escaped_strings_packet",
+      "t": "ack",
+      "secret_key": "test-secret-key-32-chars-long12345",
+      "unsigned": "{\"v\":\"1.1\",\"t\":\"ack\",\"nonce\":1001,\"seq\":7,\"id\":\"cmd:\\\"001\\\"\\\\test\",\"status\":\"err\",\"err\":\"err: \\\"timeout\\\" \\\\ fault\"}",
+      "sig": "576a5e905e4bbf41",
+      "signed_line": "{\"v\":\"1.1\",\"t\":\"ack\",\"nonce\":1001,\"seq\":7,\"id\":\"cmd:\\\"001\\\"\\\\test\",\"status\":\"err\",\"err\":\"err: \\\"timeout\\\" \\\\ fault\",\"sig\":\"576a5e905e4bbf41\"}\n"
     }
   ]
 }

@@ -12,6 +12,7 @@ import json
 import logging
 import time
 from typing import Any, Dict, List, Literal, Optional, Union
+import urllib.parse
 import uuid
 import httpx
 from pydantic import BaseModel, Field, model_validator
@@ -426,21 +427,25 @@ class RulesEvaluator:
 
             # 5. Webhook Post with SSRF Defense (Part 3.4)
             elif tgt == "webhook.post" and act.url:
-                from app.core.security import validate_webhook_url
-                is_safe, err_msg = await asyncio.to_thread(
-                    validate_webhook_url, act.url, system_config.security.webhook_allowlist
+                from app.core.security import PinnedIPTransport, async_validate_webhook_url
+                is_safe, err_msg, pinned_ip = await async_validate_webhook_url(
+                    act.url, system_config.security.webhook_allowlist
                 )
-                if not is_safe:
+                if not is_safe or not pinned_ip:
                     logger.error("SSRF PROTECTION: Rule webhook '%s' rejected: %s", act.url, err_msg)
                     continue
 
-                async def _post(target_url: str):
+                parsed = urllib.parse.urlparse(act.url)
+                orig_host = parsed.hostname or ""
+
+                async def _post(target_url: str, ip_pin: str, host_header: str):
                     try:
-                        async with httpx.AsyncClient(timeout=4.0) as client:
+                        transport = PinnedIPTransport(pinned_ip=ip_pin, original_host=host_header)
+                        async with httpx.AsyncClient(transport=transport, timeout=4.0) as client:
                             await client.post(target_url, json=act.payload or {"rule": rule.name})
                     except Exception as e:
                         logger.error("Rule webhook error: %s", e)
-                asyncio.create_task(_post(act.url))
+                asyncio.create_task(_post(act.url, pinned_ip, orig_host))
 
 
 

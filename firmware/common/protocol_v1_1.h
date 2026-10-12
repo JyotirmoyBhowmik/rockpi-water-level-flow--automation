@@ -116,6 +116,52 @@ static inline bool protocol_verify_and_strip_sig(char *buf, const char *secret_k
 }
 
 // ============================================================================
+// JSON String Escaping Helper (Escapes '"' and '\\' for canonical JSON lines)
+// ============================================================================
+
+static inline int protocol_json_escape(const char *src, char *out_buf, size_t out_size) {
+    if (!out_buf || out_size == 0) return 0;
+    if (!src) {
+        out_buf[0] = '\0';
+        return 0;
+    }
+    size_t out_idx = 0;
+    for (size_t i = 0; src[i] != '\0'; i++) {
+        char c = src[i];
+        if (c == '"' || c == '\\') {
+            if (out_idx + 2 >= out_size) {
+                out_buf[out_idx] = '\0';
+                return -1;
+            }
+            out_buf[out_idx++] = '\\';
+            out_buf[out_idx++] = c;
+        } else if (c == '\n') {
+            if (out_idx + 2 >= out_size) { out_buf[out_idx] = '\0'; return -1; }
+            out_buf[out_idx++] = '\\';
+            out_buf[out_idx++] = 'n';
+        } else if (c == '\r') {
+            if (out_idx + 2 >= out_size) { out_buf[out_idx] = '\0'; return -1; }
+            out_buf[out_idx++] = '\\';
+            out_buf[out_idx++] = 'r';
+        } else if (c == '\t') {
+            if (out_idx + 2 >= out_size) { out_buf[out_idx] = '\0'; return -1; }
+            out_buf[out_idx++] = '\\';
+            out_buf[out_idx++] = 't';
+        } else {
+            if (out_idx + 1 >= out_size) {
+                out_buf[out_idx] = '\0';
+                return -1;
+            }
+            out_buf[out_idx++] = c;
+        }
+    }
+    out_buf[out_idx] = '\0';
+    return (int)out_idx;
+}
+
+#define json_escape protocol_json_escape
+
+// ============================================================================
 // Fixed-Order Message Formatters (Unsigned Canonical JSON)
 // ============================================================================
 
@@ -145,37 +191,49 @@ static inline int format_flow_unsigned(char *buf, size_t size, uint32_t nonce, u
 
 static inline int format_pump_unsigned(char *buf, size_t size, uint32_t nonce, uint32_t seq,
                                       int z, bool on, const char *reason, int run_s) {
+    char esc_reason[64];
+    protocol_json_escape(reason ? reason : "", esc_reason, sizeof(esc_reason));
     return snprintf(buf, size,
         "{\"v\":\"1.1\",\"t\":\"pump\",\"nonce\":%u,\"seq\":%u,\"z\":%d,\"on\":%s,\"reason\":\"%s\",\"run_s\":%d}",
-        nonce, seq, z, on ? "true" : "false", reason ? reason : "", run_s);
+        nonce, seq, z, on ? "true" : "false", esc_reason, run_s);
 }
 
 static inline int format_ack_unsigned(char *buf, size_t size, uint32_t nonce, uint32_t seq,
                                      const char *id, const char *status, const char *err) {
+    char esc_id[64];
+    char esc_err[64];
+    protocol_json_escape(id ? id : "", esc_id, sizeof(esc_id));
+    protocol_json_escape(err ? err : "", esc_err, sizeof(esc_err));
     return snprintf(buf, size,
         "{\"v\":\"1.1\",\"t\":\"ack\",\"nonce\":%u,\"seq\":%u,\"id\":\"%s\",\"status\":\"%s\",\"err\":\"%s\"}",
-        nonce, seq, id ? id : "", status ? status : "", err ? err : "");
+        nonce, seq, esc_id, status ? status : "", esc_err);
 }
 
 static inline int format_cmd_unsigned(char *buf, size_t size, uint32_t nonce, uint32_t seq,
                                      const char *id, int z, int run_s) {
+    char esc_id[64];
+    protocol_json_escape(id ? id : "", esc_id, sizeof(esc_id));
     return snprintf(buf, size,
         "{\"v\":\"1.1\",\"t\":\"cmd\",\"nonce\":%u,\"seq\":%u,\"id\":\"%s\",\"z\":%d,\"run_s\":%d}",
-        nonce, seq, id ? id : "", z, run_s);
+        nonce, seq, esc_id, z, run_s);
 }
 
 static inline int format_stop_unsigned(char *buf, size_t size, uint32_t nonce, uint32_t seq,
                                       const char *id, int z) {
+    char esc_id[64];
+    protocol_json_escape(id ? id : "", esc_id, sizeof(esc_id));
     return snprintf(buf, size,
         "{\"v\":\"1.1\",\"t\":\"stop\",\"nonce\":%u,\"seq\":%u,\"id\":\"%s\",\"z\":%d}",
-        nonce, seq, id ? id : "", z);
+        nonce, seq, esc_id, z);
 }
 
 static inline int format_stop_all_unsigned(char *buf, size_t size, uint32_t nonce, uint32_t seq,
                                           const char *id) {
+    char esc_id[64];
+    protocol_json_escape(id ? id : "", esc_id, sizeof(esc_id));
     return snprintf(buf, size,
         "{\"v\":\"1.1\",\"t\":\"stop_all\",\"nonce\":%u,\"seq\":%u,\"id\":\"%s\"}",
-        nonce, seq, id ? id : "");
+        nonce, seq, esc_id);
 }
 
 #ifdef __cplusplus

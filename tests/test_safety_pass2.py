@@ -14,6 +14,8 @@ Covers:
 """
 
 import asyncio
+import json
+import os
 from pathlib import Path
 import time
 import pytest
@@ -21,11 +23,12 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api.server import create_app
 from app.config import system_config
-from app.core.security import security_manager, validate_webhook_url
+from app.core.security import is_ip_allowed_for_webhook, security_manager, validate_webhook_url
 from app.core.state_manager import state_manager
 from app.core.watchdog import HealthMonitor
 from app.engine.failsafes import failsafe_engine
-from app.hardware.audio_driver import VOICE_REGEX, ALSA_DEVICE_REGEX
+from app.hardware.audio_driver import ALSA_DEVICE_REGEX, VOICE_REGEX
+from app.hardware.protocol import SequenceTracker
 from app.hardware.rtc import get_monotonic_now
 
 
@@ -388,23 +391,21 @@ async def test_sse_ticket_generation_and_single_use(tmp_path: Path):
 def test_webhook_ssrf_protection():
     allowlist = ["hooks.slack.com", "api.telegram.org"]
 
-    # Allowed external host
-    # Note: socket.getaddrinfo will fail in offline or resolve safely
     # Check rejection of loopback and link-local:
     safe, err = validate_webhook_url("http://127.0.0.1:8000/webhook", allowlist)
     assert safe is False
-    assert "allowlist" in err or "loopback" in err
+    assert "allowlist" in err.lower() or "loopback" in err.lower() or "scheme" in err.lower()
 
-    safe, err = validate_webhook_url("http://169.254.169.254/latest/meta-data", allowlist)
+    safe, err = validate_webhook_url("https://169.254.169.254/latest/meta-data", allowlist)
     assert safe is False
 
-    safe, err = validate_webhook_url("http://localhost:8080/pwn", allowlist)
+    safe, err = validate_webhook_url("https://localhost:8080/pwn", allowlist)
     assert safe is False
 
     # Unsupported schemes rejected
     safe, err = validate_webhook_url("file:///etc/passwd", allowlist)
     assert safe is False
-    assert "Unsupported scheme" in err
+    assert "unsupported scheme" in err.lower()
 
 
 # -----------------------------------------------------------------------------
@@ -746,4 +747,217 @@ async def test_head_end_gpio_setup_fails_safe_on_input_claim_failure(monkeypatch
     assert ok is False
     assert driver.is_hardware_available is False
     assert stub.closed is True
+
+
+# -----------------------------------------------------------------------------
+# 16. Strict CSP & Security Headers
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_strict_csp_and_security_headers():
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.get("/healthz")
+        assert res.status_code == 200
+
+        csp = res.headers.get("Content-Security-Policy", "")
+        assert "default-src 'self'" in csp
+        assert "script-src 'self'" in csp
+        assert "style-src 'self'" in csp
+        assert "frame-ancestors 'none'" in csp
+        assert "'unsafe-inline'" not in csp
+
+        assert res.headers.get("X-Content-Type-Options") == "nosniff"
+        assert res.headers.get("Referrer-Policy") == "no-referrer"
+        assert res.headers.get("X-Frame-Options") == "DENY"
+        assert "X-Correlation-ID" in res.headers
+
+
+# -----------------------------------------------------------------------------
+# 17. Webhook SSRF IP & URL Validation
+# -----------------------------------------------------------------------------
+def test_webhook_ssrf_ip_blocking():
+    # Loopback
+    assert is_ip_allowed_for_webhook("127.0.0.1")[0] is False
+    assert is_ip_allowed_for_webhook("::1")[0] is False
+
+    # Private RFC1918
+    assert is_ip_allowed_for_webhook("10.0.0.1")[0] is False
+    assert is_ip_allowed_for_webhook("172.16.0.1")[0] is False
+    assert is_ip_allowed_for_webhook("192.168.1.1")[0] is False
+
+    # CGNAT 100.64.0.0/10
+    assert is_ip_allowed_for_webhook("100.64.0.1")[0] is False
+    assert is_ip_allowed_for_webhook("100.127.255.254")[0] is False
+
+    # Cloud metadata 169.254.169.254 / Link local
+    assert is_ip_allowed_for_webhook("169.254.169.254")[0] is False
+    assert is_ip_allowed_for_webhook("169.254.1.1")[0] is False
+
+    # IPv6 ULA fc00::/7
+    assert is_ip_allowed_for_webhook("fc00::1")[0] is False
+    assert is_ip_allowed_for_webhook("fd12:3456:789a::1")[0] is False
+
+    # Public IP
+    assert is_ip_allowed_for_webhook("8.8.8.8")[0] is True
+    assert is_ip_allowed_for_webhook("1.1.1.1")[0] is True
+
+
+def test_validate_webhook_url_rejected_and_accepted():
+    # HTTPS required
+    valid, err = validate_webhook_url("http://8.8.8.8/hook", require_https=True)
+    assert valid is False
+    assert "https" in err.lower()
+
+    # Private IP blocked
+    valid, err = validate_webhook_url("https://127.0.0.1/hook")
+    assert valid is False
+    assert "blocked" in err.lower() or "not allowed" in err.lower()
+
+    # Metadata blocked
+    valid, err = validate_webhook_url("https://169.254.169.254/latest/meta-data")
+    assert valid is False
+
+    # CGNAT blocked
+    valid, err = validate_webhook_url("https://100.64.0.5/api/alert")
+    assert valid is False
+
+    # Valid public HTTPS URL
+    valid, err = validate_webhook_url("https://8.8.8.8/api/alert", require_https=True)
+    assert valid is True
+    assert err is None
+
+
+# -----------------------------------------------------------------------------
+# 18. SecurityManager Token Caching & Mtime Invalidation
+# -----------------------------------------------------------------------------
+def test_security_manager_token_caching_and_mtime_invalidation(tmp_path: Path):
+    auth_file = tmp_path / "auth.json"
+    security_manager.auth_file_path = auth_file
+    system_config.security.auth_token_file = str(auth_file)
+
+    token1, _ = security_manager.get_or_create_token()
+    assert token1 is not None
+
+    # Verify initial token verifies successfully
+    assert security_manager.verify_token(token1) is True
+    assert security_manager.verify_token("invalid-token") is False
+
+    # Cached hash should match
+    cached_hash = security_manager._cached_token_hash
+    assert cached_hash is not None
+
+    # Write a new token with updated mtime
+    token2 = "new-rotated-token-67890-test-key"
+    import hashlib
+    new_hash = hashlib.sha256(token2.encode("utf-8")).hexdigest()
+    data = {
+        "token_hash": new_hash,
+        "created_at": "2026-10-12T00:00:00Z",
+    }
+    time.sleep(0.05)
+    with open(auth_file, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    new_mtime = os.stat(auth_file).st_mtime + 2.0
+    os.utime(auth_file, (new_mtime, new_mtime))
+
+    # verify_token should detect mtime change, reload, and accept token2
+    assert security_manager.verify_token(token2) is True
+    assert security_manager.verify_token(token1) is False
+    assert security_manager._cached_token_hash == new_hash
+
+
+# -----------------------------------------------------------------------------
+# 19. SequenceTracker Strict Nonce Replay Defense (Choice B)
+# -----------------------------------------------------------------------------
+def test_sequence_tracker_strict_nonce_verification():
+    # Non-strict tracker (backward compatible)
+    tracker_permissive = SequenceTracker(strict_nonce_verification=False)
+    ok, err = tracker_permissive.validate_and_update(1, nonce=1001)
+    assert ok is True
+    ok, err = tracker_permissive.validate_and_update(2, nonce=1001)
+    assert ok is True
+    # Replay in same session rejected
+    ok, err = tracker_permissive.validate_and_update(2, nonce=1001)
+    assert ok is False
+    assert "Replay" in err
+    # New nonce mid-session with seq=5 accepted in permissive mode
+    ok, err = tracker_permissive.validate_and_update(5, nonce=2002)
+    assert ok is True
+
+    # Strict tracker (Choice B replay defense)
+    tracker_strict = SequenceTracker(strict_nonce_verification=True)
+    ok, err = tracker_strict.validate_and_update(1, nonce=1001, boot_count=1)
+    assert ok is True
+    ok, err = tracker_strict.validate_and_update(2, nonce=1001)
+    assert ok is True
+
+    # Mid-session replay with new nonce but seq > 1 without boot counter -> REJECTED
+    ok, err = tracker_strict.validate_and_update(5, nonce=3003)
+    assert ok is False
+    assert "Strict nonce rejection" in err
+
+    # Boot announcement with seq == 1 on new nonce -> ACCEPTED
+    ok, err = tracker_strict.validate_and_update(1, nonce=3003, boot_count=2)
+    assert ok is True
+    assert err is None
+
+    # New nonce with increasing boot counter -> ACCEPTED even if seq > 1
+    ok, err = tracker_strict.validate_and_update(3, nonce=4004, boot_count=3)
+    assert ok is True
+
+    # New nonce with stagnant or lower boot counter and seq > 1 -> REJECTED
+    ok, err = tracker_strict.validate_and_update(4, nonce=5005, boot_count=2)
+    assert ok is False
+    assert "Strict nonce rejection" in err
+
+
+# -----------------------------------------------------------------------------
+# 20. Telegram Client Plain Text & Rate Limit Backoff
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_telegram_client_plain_text_and_rate_limit(monkeypatch):
+    from app.alerts.telegram_client import TelegramNotifier
+    import httpx
+
+    notifier = TelegramNotifier()
+    system_config.telegram.enabled = True
+    system_config.telegram.bot_token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+    system_config.telegram.chat_id = "987654321"
+
+    sent_requests = []
+
+    class MockTransport(httpx.AsyncBaseTransport):
+        def __init__(self):
+            self.call_count = 0
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            self.call_count += 1
+            body = json.loads(request.content.decode("utf-8"))
+            sent_requests.append(body)
+
+            if self.call_count == 1:
+                # First attempt returns 429 Too Many Requests with retry_after
+                return httpx.Response(
+                    status_code=429,
+                    json={"ok": False, "error_code": 429, "parameters": {"retry_after": 0.01}},
+                    request=request,
+                )
+            # Second attempt succeeds
+            return httpx.Response(status_code=200, json={"ok": True}, request=request)
+
+    mock_client = httpx.AsyncClient(transport=MockTransport())
+    notifier._client = mock_client
+    await notifier.start()
+    try:
+        await notifier.send_alert("WATER_LEAK", "Critical water leak detected in basement!")
+        assert notifier._queue is not None
+        await asyncio.wait_for(notifier._queue.join(), timeout=3.0)
+    finally:
+        await notifier.stop()
+
+    assert len(sent_requests) == 2
+    # Verify NO parse_mode is set (plain text formatting)
+    assert "parse_mode" not in sent_requests[0]
+    assert "Critical water leak detected in basement!" in sent_requests[0]["text"]
+
 

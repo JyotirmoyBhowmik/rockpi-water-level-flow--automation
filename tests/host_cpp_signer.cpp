@@ -63,6 +63,16 @@ int main(int argc, char* argv[]) {
         protocol_sign_in_place(buf, sizeof(buf), key.c_str());
         std::cout << buf;
 
+        // 9. Pump with escaped characters (Node -> Pi)
+        format_pump_unsigned(buf, sizeof(buf), 1001, 6, 2, false, "fault: \"sensor\" \\ timeout", 10);
+        protocol_sign_in_place(buf, sizeof(buf), key.c_str());
+        std::cout << buf;
+
+        // 10. Ack with escaped characters (Node -> Pi)
+        format_ack_unsigned(buf, sizeof(buf), 1001, 7, "cmd:\"001\"\\test", "err", "err: \"timeout\" \\ fault");
+        protocol_sign_in_place(buf, sizeof(buf), key.c_str());
+        std::cout << buf;
+
         return 0;
     } else if (mode == "--verify") {
         std::string line;

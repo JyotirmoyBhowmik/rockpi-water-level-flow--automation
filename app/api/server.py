@@ -256,8 +256,8 @@ def create_app() -> FastAPI:
 
         # Strict Security Headers (Part 3.6)
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "frame-ancestors 'none'; img-src 'self' data:; connect-src 'self'"
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
