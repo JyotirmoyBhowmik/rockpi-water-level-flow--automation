@@ -9,7 +9,6 @@ Implements Protocol v1.1:
 """
 
 import asyncio
-import json
 import logging
 import os
 import time
@@ -23,10 +22,12 @@ from app.hardware.protocol import (
     GatewayErrPacket,
     GatewayHbPacket,
     GatewayInitPacket,
+    PI_BOOT_NONCE,
     PacketModel,
     SequenceTracker,
+    canonicalize_packet_dict,
     parse_and_validate_packet,
-    sign_packet,
+    sign_packet_string,
 )
 
 logger = logging.getLogger("smart_water.gateway")
@@ -113,11 +114,14 @@ class GardenGatewayDriver:
         return self._tx_seq
 
     async def _write_packet(self, pkt_dict: Dict[str, Any]) -> bool:
-        """Signs and writes a packet dict as a single JSON line."""
+        """Signs and writes a packet dict as a single canonical JSON line."""
         shared_key_obj = system_config.garden_gateway.shared_key
         key = shared_key_obj.get_secret_value() if hasattr(shared_key_obj, "get_secret_value") else (shared_key_obj or "")
-        signed_pkt = sign_packet(pkt_dict, key)
-        line = json.dumps(signed_pkt, separators=(",", ":")) + "\n"
+        pkt = dict(pkt_dict)
+        if "nonce" not in pkt:
+            pkt["nonce"] = PI_BOOT_NONCE
+        unsigned_str = canonicalize_packet_dict(pkt)
+        line = sign_packet_string(unsigned_str, key)
         encoded = line.encode("utf-8")
 
         if not self._serial_port:
@@ -150,10 +154,11 @@ class GardenGatewayDriver:
             pkt_dict = {
                 "v": "1.1",
                 "t": "cmd",
+                "nonce": PI_BOOT_NONCE,
+                "seq": self._next_tx_seq(),
                 "id": cmd_id,
                 "z": zone_idx,
                 "run_s": run_seconds,
-                "seq": self._next_tx_seq(),
             }
 
             loop = asyncio.get_running_loop()
@@ -194,9 +199,10 @@ class GardenGatewayDriver:
         pkt_dict = {
             "v": "1.1",
             "t": "stop",
+            "nonce": PI_BOOT_NONCE,
+            "seq": self._next_tx_seq(),
             "id": cmd_id,
             "z": zone_idx,
-            "seq": self._next_tx_seq(),
         }
         await self._write_packet(pkt_dict)
 
@@ -206,8 +212,9 @@ class GardenGatewayDriver:
         pkt_dict = {
             "v": "1.1",
             "t": "stop_all",
-            "id": cmd_id,
+            "nonce": PI_BOOT_NONCE,
             "seq": self._next_tx_seq(),
+            "id": cmd_id,
         }
         await self._write_packet(pkt_dict)
 

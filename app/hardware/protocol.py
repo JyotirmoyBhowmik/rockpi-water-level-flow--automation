@@ -148,8 +148,10 @@ def compute_packet_signature(data: Union[Dict[str, Any], str], secret_key: str) 
 
 
 def sign_packet(data: Dict[str, Any], secret_key: str) -> Dict[str, Any]:
-    """Populates sig in packet dictionary."""
+    """Populates sig in packet dictionary and ensures nonce is present."""
     pkt = dict(data)
+    if "nonce" not in pkt:
+        pkt["nonce"] = PI_BOOT_NONCE
     pkt["sig"] = compute_packet_signature(pkt, secret_key)
     return pkt
 
