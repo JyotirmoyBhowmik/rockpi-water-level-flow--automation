@@ -34,19 +34,44 @@ SIG_PATTERN = re.compile(r'^(.*),"sig":"([0-9a-fA-F]{16})"\}$')
 # Canonical Formatters (Fixed Key Order, Compact Separators)
 # ==============================================================================
 
-def format_hb_unsigned(nonce: int, seq: int, uptime_s: int, res_wet: bool, ads_ok: bool,
-                       pumps: List[int], reset_reason: int, rssi: int) -> str:
+def format_hb_unsigned(
+    nonce: int, seq: int, uptime_s: int, res_wet: bool, ads_ok: bool,
+    pumps: List[int], reset_reason: int, rssi: int,
+    env: Optional[Dict[str, float]] = None,
+) -> str:
     p0 = 1 if pumps[0] else 0
     p1 = 1 if pumps[1] else 0
     p2 = 1 if pumps[2] else 0
     p3 = 1 if pumps[3] else 0
     rw = "true" if res_wet else "false"
     ao = "true" if ads_ok else "false"
-    return (
+    base = (
         f'{{"v":"1.1","t":"hb","nonce":{nonce},"seq":{seq},"uptime_s":{uptime_s},'
         f'"res_wet":{rw},"ads_ok":{ao},"pumps":[{p0},{p1},{p2},{p3}],'
-        f'"reset_reason":{reset_reason},"rssi":{rssi}}}'
+        f'"reset_reason":{reset_reason},"rssi":{rssi}'
     )
+    if env is not None:
+        temp = float(env.get("temp", 0.0))
+        rh = float(env.get("rh", 0.0))
+        press = float(env.get("press", 0.0))
+        base += f',"env":{{"temp":{temp:.3f},"rh":{rh:.3f},"press":{press:.3f}}}'
+    return base + "}"
+
+
+def format_hb_env_unsigned(
+    nonce: int, seq: int, uptime_s: int, res_wet: bool, ads_ok: bool,
+    pumps: List[int], reset_reason: int, rssi: int,
+    temp: float, rh: float, press: float,
+) -> str:
+    return format_hb_unsigned(
+        nonce, seq, uptime_s, res_wet, ads_ok, pumps, reset_reason, rssi,
+        env={"temp": temp, "rh": rh, "press": press},
+    )
+
+
+def format_env_unsigned(nonce: int, seq: int, temp: float, rh: float, press: float) -> str:
+    return f'{{"v":"1.1","t":"env","nonce":{nonce},"seq":{seq},"temp":{temp:.3f},"rh":{rh:.3f},"press":{press:.3f}}}'
+
 
 
 def format_soil_unsigned(nonce: int, seq: int, z: int, volts: float) -> str:
@@ -124,10 +149,23 @@ def canonicalize_packet_dict(data: Dict[str, Any]) -> str:
 
     if t == "hb":
         pumps = data.get("pumps", [0, 0, 0, 0])
+        env = data.get("env")
         return format_hb_unsigned(
             nonce, seq, data.get("uptime_s", 0), bool(data.get("res_wet")),
-            bool(data.get("ads_ok")), pumps, data.get("reset_reason", 0), data.get("rssi", -60)
+            bool(data.get("ads_ok")), pumps, data.get("reset_reason", 0), data.get("rssi", -60),
+            env=env,
         )
+    elif t == "env":
+        env = data.get("env")
+        if isinstance(env, dict):
+            temp = float(env.get("temp", 0.0))
+            rh = float(env.get("rh", 0.0))
+            press = float(env.get("press", 0.0))
+        else:
+            temp = float(data.get("temp", 0.0))
+            rh = float(data.get("rh", 0.0))
+            press = float(data.get("press", 0.0))
+        return format_env_unsigned(nonce, seq, temp, rh, press)
     elif t == "soil":
         return format_soil_unsigned(nonce, seq, data.get("z", 1), float(data.get("volts", 0.0)))
     elif t == "flow":
@@ -211,6 +249,12 @@ class BasePacket(BaseModel):
     sig: str = Field(..., pattern=r"^[0-9a-f]{16}$")
 
 
+class EnvData(BaseModel):
+    temp: float = Field(..., description="Temperature in degrees Celsius")
+    rh: float = Field(..., description="Relative humidity percentage (0-100)")
+    press: float = Field(..., description="Atmospheric pressure in hPa")
+
+
 class HeartbeatPacket(BasePacket):
     t: Literal["hb"] = "hb"
     uptime_s: int = Field(..., ge=0)
@@ -219,6 +263,16 @@ class HeartbeatPacket(BasePacket):
     pumps: List[int] = Field(..., min_length=4, max_length=4)
     reset_reason: int = 0
     rssi: int
+    env: Optional[EnvData] = None
+
+
+class EnvPacket(BasePacket):
+    t: Literal["env"] = "env"
+    temp: Optional[float] = None
+    rh: Optional[float] = None
+    press: Optional[float] = None
+    env: Optional[EnvData] = None
+
 
 
 class SoilPacket(BasePacket):
@@ -294,8 +348,10 @@ class GatewayErrPacket(BaseModel):
 PacketModel = Union[
     HeartbeatPacket, SoilPacket, FlowPacket, PumpEventPacket,
     CommandPacket, StopPacket, StopAllPacket, AckPacket,
-    GatewayInitPacket, GatewayHbPacket, GatewayErrPacket
+    GatewayInitPacket, GatewayHbPacket, GatewayErrPacket,
+    EnvPacket,
 ]
+
 
 
 # ==============================================================================
@@ -440,7 +496,10 @@ def parse_and_validate_packet(
             return StopAllPacket.model_validate(data), None
         elif t == "ack":
             return AckPacket.model_validate(data), None
+        elif t == "env":
+            return EnvPacket.model_validate(data), None
         else:
             return None, f"Unknown packet type '{t}'"
+
     except Exception as exc:
         return None, f"Schema validation error: {exc}"

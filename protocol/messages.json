@@ -86,6 +86,15 @@
       "nonce",
       "seq",
       "id"
+    ],
+    "env": [
+      "v",
+      "t",
+      "nonce",
+      "seq",
+      "temp",
+      "rh",
+      "press"
     ]
   },
   "type": "object",
@@ -117,7 +126,8 @@
         "ack",
         "gw_init",
         "gw_hb",
-        "gw_err"
+        "gw_err",
+        "env"
       ],
       "description": "Packet message type"
     },
@@ -130,6 +140,16 @@
       "type": "integer",
       "minimum": 0,
       "description": "Strictly monotonic packet sequence number per boot session"
+    },
+    "env": {
+      "type": "object",
+      "description": "Optional BME280 environmental telemetry (temp C, relative humidity %, pressure hPa)",
+      "required": ["temp", "rh", "press"],
+      "properties": {
+        "temp": { "type": "number", "description": "Ambient temperature in Celsius" },
+        "rh": { "type": "number", "description": "Relative humidity percentage (0-100)" },
+        "press": { "type": "number", "description": "Atmospheric pressure in hPa" }
+      }
     },
     "sig": {
       "type": "string",
@@ -217,6 +237,22 @@
       "unsigned": "{\"v\":\"1.1\",\"t\":\"ack\",\"nonce\":1001,\"seq\":7,\"id\":\"cmd:\\\"001\\\"\\\\test\",\"status\":\"err\",\"err\":\"err: \\\"timeout\\\" \\\\ fault\"}",
       "sig": "576a5e905e4bbf41",
       "signed_line": "{\"v\":\"1.1\",\"t\":\"ack\",\"nonce\":1001,\"seq\":7,\"id\":\"cmd:\\\"001\\\"\\\\test\",\"status\":\"err\",\"err\":\"err: \\\"timeout\\\" \\\\ fault\",\"sig\":\"576a5e905e4bbf41\"}\n"
+    },
+    {
+      "name": "heartbeat_with_env_packet",
+      "t": "hb",
+      "secret_key": "test-secret-key-32-chars-long12345",
+      "unsigned": "{\"v\":\"1.1\",\"t\":\"hb\",\"nonce\":1001,\"seq\":8,\"uptime_s\":120,\"res_wet\":true,\"ads_ok\":true,\"pumps\":[0,0,0,0],\"reset_reason\":1,\"rssi\":-65,\"env\":{\"temp\":24.500,\"rh\":55.200,\"press\":1013.250}}",
+      "sig": "df7583effde6fac6",
+      "signed_line": "{\"v\":\"1.1\",\"t\":\"hb\",\"nonce\":1001,\"seq\":8,\"uptime_s\":120,\"res_wet\":true,\"ads_ok\":true,\"pumps\":[0,0,0,0],\"reset_reason\":1,\"rssi\":-65,\"env\":{\"temp\":24.500,\"rh\":55.200,\"press\":1013.250},\"sig\":\"df7583effde6fac6\"}\n"
+    },
+    {
+      "name": "env_telemetry_packet",
+      "t": "env",
+      "secret_key": "test-secret-key-32-chars-long12345",
+      "unsigned": "{\"v\":\"1.1\",\"t\":\"env\",\"nonce\":1001,\"seq\":9,\"temp\":24.500,\"rh\":55.200,\"press\":1013.250}",
+      "sig": "6e3b1d700a19f443",
+      "signed_line": "{\"v\":\"1.1\",\"t\":\"env\",\"nonce\":1001,\"seq\":9,\"temp\":24.500,\"rh\":55.200,\"press\":1013.250,\"sig\":\"6e3b1d700a19f443\"}\n"
     }
   ]
 }

@@ -140,6 +140,17 @@ level_sensor:
   night_leak_window_end: 4         # Hour (0-23) when night window ends (04:00)
   night_leak_max_drop_litres: 15.0 # Max allowable level drop in Litres during night window
 
+# Weather-Aware Irrigation Skip (Open-Meteo Forecast, No API Key Required)
+weather:
+  enabled: false                   # Enable Open-Meteo forecast checks
+  latitude: 0.0                    # Decimal latitude (e.g. 12.9716)
+  longitude: 0.0                   # Decimal longitude (e.g. 77.5946)
+  poll_interval_hours: 3.0         # Hours between Open-Meteo forecast API calls
+  forecast_lookahead_hours: 12     # Window ahead to evaluate rain probability
+  rain_prob_threshold_pct: 60.0    # Rain probability % to trigger watering skip
+  past_rain_threshold_mm: 5.0      # Past 24h rainfall mm to trigger watering skip
+  timeout_seconds: 10.0            # HTTP timeout for weather forecast API requests
+
 # Wireless Garden Drip Zones (1-4)
 zones:
   zone_1:
@@ -153,6 +164,13 @@ zones:
     flow_meter_model: "YF-S201"
     flow_k_factor: 7.5
     min_pulses_10s: 5
+    schedule_window_start: null
+    schedule_window_end: null
+    soak_cycle_enabled: false
+    soak_pulse_seconds: 15
+    soak_wait_seconds: 60
+    soak_pulse_count: 3
+    daily_budget_litres: null
     calibration:
       dry_v: null
       wet_v: null
@@ -330,9 +348,24 @@ Configures optional continuous overhead tank water level monitoring via JSN-SR04
 | `night_leak_window_end` | `int` | `4` | >= 0, <= 23 | Hour (0-23) when night zero-usage window ends (e.g. 4 = 04:00) |
 | `night_leak_max_drop_litres` | `float` | `15.0` | >= 1.0, <= 500.0 | Max allowable level drop in Litres during night window before raising leak alarm |
 
+### WeatherConfig (`weather`)
+
+Configures automated Open-Meteo weather forecast checks (rain probability, past 24h precipitation) to skip unnecessary irrigation.
+
+| Field | Type | Default | Constraints | Description |
+|---|---|---|---|---|
+| `enabled` | `bool` | `false` | - | Enable Open-Meteo weather-aware irrigation skips |
+| `latitude` | `float` | `0.0` | >= -90.0, <= 90.0 | Latitude for Open-Meteo weather forecast |
+| `longitude` | `float` | `0.0` | >= -180.0, <= 180.0 | Longitude for Open-Meteo weather forecast |
+| `poll_interval_hours` | `float` | `3.0` | >= 1.0, <= 24.0 | Forecast polling frequency in hours (default 3h) |
+| `forecast_lookahead_hours` | `int` | `12` | >= 1, <= 48 | Lookahead window in hours to evaluate rain probability |
+| `rain_prob_threshold_pct` | `float` | `60.0` | >= 0.0, <= 100.0 | Rain probability threshold (%) to skip watering |
+| `past_rain_threshold_mm` | `float` | `5.0` | >= 0.0, <= 200.0 | Rainfall in last 24h (mm) threshold to skip watering |
+| `timeout_seconds` | `float` | `10.0` | >= 1.0, <= 60.0 | HTTP request timeout in seconds |
+
 ### ZoneConfig (`zones.<zone_id>`)
 
-Per-zone irrigation settings: moisture threshold, pulse limits, cooldown periods, and flow verification.
+Per-zone irrigation settings: moisture threshold, pulse limits, cooldown periods, soak cycles, daily budgets, and flow verification.
 
 | Field | Type | Default | Constraints | Description |
 |---|---|---|---|---|
@@ -347,6 +380,13 @@ Per-zone irrigation settings: moisture threshold, pulse limits, cooldown periods
 | `flow_k_factor` | `float` | `7.5` | >= 0.1, <= 100.0 | K-factor in Hz per L/min (7.5 for YF-S201 = 450 pulses/L) |
 | `min_pulses_10s` | `int` | `5` | >= 0 | - |
 | `calibration` | `ZoneCalibration` | `ZoneCalibration()` | - | - |
+| `schedule_window_start` | `Optional[int]` | `null` | >= 0, <= 23 | Allowed watering window start hour (0-23) |
+| `schedule_window_end` | `Optional[int]` | `null` | >= 0, <= 23 | Allowed watering window end hour (0-23) |
+| `soak_cycle_enabled` | `bool` | `false` | - | Enable soak cycles (pulse + wait + pulse) to prevent runoff |
+| `soak_pulse_seconds` | `int` | `15` | >= 1, <= 60 | Duration in seconds of each pulse in soak cycle |
+| `soak_wait_seconds` | `int` | `120` | >= 5, <= 1800 | Rest/soak interval between pulses in seconds |
+| `soak_pulse_count` | `int` | `2` | >= 1, <= 10 | Number of pulses per soak cycle |
+| `daily_budget_litres` | `Optional[float]` | `null` | >= 0.1, <= 1000.0 | Maximum water budget per zone per day in Litres |
 
 ### ZoneCalibration (`zones.<zone_id>.calibration`)
 
@@ -425,3 +465,4 @@ Commissioning checklist tracking input checks, relay click tests, gateway pairin
 6. **Exclusive Watchdog Ownership:** The application exclusively manages `/dev/watchdog`. Do not enable `RuntimeWatchdogSec` in systemd system.conf.
 7. **Supplementary Motor Current Protection:** Software current monitoring detects dry-run (loss of prime) and locked rotor. It provides supplementary protection and **NEVER replaces the physical bimetallic/electronic thermal overload relay or MPCB** required by electrical codes.
 8. **Authoritative Hardware Floats:** Continuous level sensing provides predictive control, telemetry, and automated leak detection. The electromechanical float switches (Full float NC, Sump float NO) remain the authoritative, non-bypassable hardware and software safety interlock.
+9. **Weather & Irrigation Safety Invariant:** Weather forecast skips, schedule windows, and daily budgets are evaluated as safety gates. All automatic irrigation actions must strictly pass `failsafe_engine.can_water_zone()`.

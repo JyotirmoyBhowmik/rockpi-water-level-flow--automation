@@ -25,6 +25,7 @@ class PlantIrrigationController:
     def __init__(self) -> None:
         self._active_runs: Dict[str, Dict[str, Any]] = {}
         self._completion_tasks: Dict[str, asyncio.Task[None]] = {}
+        self._active_soak_tasks: Dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
 
     async def trigger_zone_pulse(
@@ -112,9 +113,123 @@ class PlantIrrigationController:
 
             return True, f"Zone {zone_key} energized for {clamped_sec}s."
 
-    async def stop_zone_pulse(self, zone_key: str, reason: str = "manual_stop") -> Tuple[bool, str]:
-        """Manually stops an active pump run."""
+    async def trigger_soak_cycle(
+        self,
+        zone_key: str,
+        is_manual: bool = False,
+        source: str = "auto_moisture",
+    ) -> Tuple[bool, str]:
+        """
+        Coordinates a multi-pulse soak cycle (pulse + wait + pulse) to prevent soil runoff.
+        Validates failsafe_engine.can_water_zone() before each pulse.
+        """
         async with self._lock:
+            z_cfg = system_config.zones.get(zone_key)
+            if not z_cfg:
+                return False, f"Unknown zone '{zone_key}'."
+
+            if not is_manual and not z_cfg.soak_cycle_enabled:
+                return False, f"Soak cycle not enabled for {zone_key}."
+
+            if zone_key in self._active_soak_tasks:
+                return False, f"Zone {zone_key} soak cycle is already active."
+
+            if zone_key in self._active_runs:
+                return False, f"Zone {zone_key} pump is already running."
+
+            allowed, reason = failsafe_engine.can_water_zone(zone_key, is_manual=is_manual)
+            if not allowed:
+                logger.warning("Soak cycle for %s rejected by failsafe: %s", zone_key, reason)
+                return False, f"Watering blocked: {reason}"
+
+            pulse_count = max(1, z_cfg.soak_pulse_count)
+            pulse_sec = max(1, min(z_cfg.soak_pulse_seconds, z_cfg.max_pulse_seconds, 60))
+            wait_sec = max(1, z_cfg.soak_wait_seconds)
+
+            async def _run_soak() -> None:
+                await state_manager.set_zone_soak_active(zone_key, True)
+                await bus.publish("soak:started", {"zone": zone_key, "pulse_count": pulse_count, "source": source})
+                log_msg = f"Starting soak cycle for {zone_key} ({pulse_count} pulses of {pulse_sec}s, {wait_sec}s wait)."
+                logger.info(log_msg)
+                await state_manager.log_event("SOAK_CYCLE_START", "INFO", log_msg, {"zone": zone_key, "pulses": pulse_count})
+
+                aborted = False
+                completed_pulses = 0
+                try:
+                    for p_num in range(1, pulse_count + 1):
+                        allowed, reason = failsafe_engine.can_water_zone(zone_key, is_manual=is_manual)
+                        if not allowed:
+                            logger.warning("Soak cycle for %s aborted before pulse %d: %s", zone_key, p_num, reason)
+                            await state_manager.log_event(
+                                "SOAK_CYCLE_ABORTED", "WARNING",
+                                f"Soak cycle aborted at pulse {p_num}: {reason}",
+                                {"zone": zone_key, "pulse": p_num, "reason": reason}
+                            )
+                            aborted = True
+                            break
+
+                        success, msg = await self.trigger_zone_pulse(
+                            zone_key,
+                            duration_s=pulse_sec,
+                            is_manual=is_manual,
+                            source="soak_pulse",
+                        )
+                        if not success:
+                            logger.warning("Soak pulse %d for %s failed: %s", p_num, zone_key, msg)
+                            aborted = True
+                            break
+
+                        while True:
+                            async with self._lock:
+                                if zone_key not in self._active_runs:
+                                    break
+                            await asyncio.sleep(0.05)
+
+                        completed_pulses += 1
+
+                        if p_num < pulse_count:
+                            logger.info("Soak cycle for %s: pulse %d/%d complete, waiting %ds...", zone_key, p_num, pulse_count, wait_sec)
+                            await asyncio.sleep(wait_sec)
+
+                    if not aborted:
+                        logger.info("Soak cycle completed for %s (%d pulses).", zone_key, completed_pulses)
+                        await state_manager.log_event(
+                            "SOAK_CYCLE_COMPLETE", "INFO",
+                            f"Soak cycle completed for {zone_key} ({completed_pulses} pulses).",
+                            {"zone": zone_key, "pulses": completed_pulses}
+                        )
+                        is_cooldown_source = (source == "auto_moisture") or (isinstance(source, str) and source.startswith("rule:"))
+                        if is_cooldown_source and z_cfg:
+                            now = time.time()
+                            cooldown_s = z_cfg.cooldown_hours * 3600.0
+                            await state_manager.set_zone_cooldown(zone_key, now + cooldown_s)
+
+                except asyncio.CancelledError:
+                    logger.info("Soak cycle for %s cancelled.", zone_key)
+                    if zone_key in self._active_runs:
+                        try:
+                            zone_idx = int(zone_key.split("_")[-1])
+                            await garden_gateway.send_pump_stop(zone_idx)
+                        except Exception:
+                            pass
+                        await self.on_pump_completed(zone_key, reason="soak_cancelled")
+                finally:
+                    self._active_soak_tasks.pop(zone_key, None)
+                    await state_manager.set_zone_soak_active(zone_key, False)
+                    await bus.publish("soak:stopped", {"zone": zone_key, "completed_pulses": completed_pulses})
+
+            await state_manager.set_zone_soak_active(zone_key, True)
+            soak_task = asyncio.create_task(_run_soak())
+            self._active_soak_tasks[zone_key] = soak_task
+            return True, f"Soak cycle initiated for {zone_key} ({pulse_count} pulses of {pulse_sec}s)."
+
+    async def stop_zone_pulse(self, zone_key: str, reason: str = "manual_stop") -> Tuple[bool, str]:
+        """Manually stops an active pump run and cancels active soak cycles."""
+        async with self._lock:
+            soak_task = self._active_soak_tasks.pop(zone_key, None)
+            if soak_task and not soak_task.done():
+                soak_task.cancel()
+
             watcher = self._completion_tasks.pop(zone_key, None)
             if watcher and not watcher.done():
                 watcher.cancel()
@@ -126,11 +241,17 @@ class PlantIrrigationController:
                 logger.warning("Failed to dispatch stop signal to gateway: %s", e)
 
             await self.on_pump_completed(zone_key, reason=reason)
+            await state_manager.set_zone_soak_active(zone_key, False)
             return True, f"Zone {zone_key} stop signal dispatched."
 
     async def stop_all_zones(self, reason: str = "emergency_stop") -> None:
-        """Kills all active zone pumps immediately."""
+        """Kills all active zone pumps and soak cycles immediately."""
         async with self._lock:
+            for soak_task in list(self._active_soak_tasks.values()):
+                if not soak_task.done():
+                    soak_task.cancel()
+            self._active_soak_tasks.clear()
+
             for watcher in self._completion_tasks.values():
                 if not watcher.done():
                     watcher.cancel()
@@ -143,6 +264,8 @@ class PlantIrrigationController:
 
             for z_key in list(self._active_runs.keys()):
                 await self.on_pump_completed(z_key, reason=reason)
+            for z_key in system_config.zones:
+                await state_manager.set_zone_soak_active(z_key, False)
 
     async def on_pump_completed(self, zone_key: str, reason: str = "done") -> None:
         """Called when node signals completion or timer expires. Idempotent."""
@@ -200,12 +323,20 @@ class PlantIrrigationController:
             if not z_state.get("calibrated"):
                 continue
 
+            # Don't trigger if already running or in soak cycle
+            if z_state.get("pump_running") or z_state.get("soak_active") or (z_key in self._active_soak_tasks):
+                continue
+
             moisture = z_state.get("moisture_pct")
             if moisture is not None and moisture < z_cfg.soil_dry_threshold_pct:
                 allowed, _ = failsafe_engine.can_water_zone(z_key, is_manual=False)
-                if allowed and not z_state.get("pump_running"):
-                    logger.info("Auto-watering triggered for %s (Moisture %.1f%% < %.1f%%)", z_key, moisture, z_cfg.soil_dry_threshold_pct)
-                    await self.trigger_zone_pulse(z_key, duration_s=z_cfg.pulse_seconds, is_manual=False, source="auto_moisture")
+                if allowed:
+                    if z_cfg.soak_cycle_enabled:
+                        logger.info("Auto soak cycle triggered for %s (Moisture %.1f%% < %.1f%%)", z_key, moisture, z_cfg.soil_dry_threshold_pct)
+                        await self.trigger_soak_cycle(z_key, is_manual=False, source="auto_moisture")
+                    else:
+                        logger.info("Auto-watering triggered for %s (Moisture %.1f%% < %.1f%%)", z_key, moisture, z_cfg.soil_dry_threshold_pct)
+                        await self.trigger_zone_pulse(z_key, duration_s=z_cfg.pulse_seconds, is_manual=False, source="auto_moisture")
 
 
 plant_controller = PlantIrrigationController()

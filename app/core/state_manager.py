@@ -111,14 +111,22 @@ class StateManager:
                 "ads_ok": None,
                 "reservoir_wet": None,       # None = No reading yet
                 "reservoir_last_update_ts": None,
+                "env": {
+                    "temp_c": None,
+                    "rh_pct": None,
+                    "pressure_hpa": None,
+                    "last_update_ts": None,
+                },
                 "zones": {
                     f"zone_{i}": {
                         "voltage": None,
                         "moisture_pct": None,
                         "calibrated": False,
                         "pump_running": False,
+                        "soak_active": False,
                         "flow_delta": 0,
                         "flow_fault": False,
+                        "daily_litres": 0.0,
                         "cooldown_until_ts": 0.0,
                         "last_update_ts": None,
                     }
@@ -153,8 +161,18 @@ class StateManager:
                 "predictive_stop_pct": None,
                 "last_update_ts": None,
             },
+            "weather": {
+                "enabled": False,
+                "skip_active": False,
+                "skip_reason": None,
+                "rain_prob_max_pct": None,
+                "rainfall_past_24h_mm": None,
+                "temperature_c": None,
+                "last_fetch_ts": None,
+            },
             "alarms": {},
         }
+
 
     # -------------------------------------------------------------------------
     # State Accessors
@@ -177,7 +195,11 @@ class StateManager:
         from app.hardware.level_sensor import level_sensor
         state["level_sensor"] = level_sensor.get_status_dict()
 
+        from app.engine.weather_service import weather_service
+        state["weather"] = weather_service.get_status_dict()
+
         if state["motor"]["state"] == "RUNNING" and self._state["motor"]["started_at_monotonic"]:
+
             run_sec = int(get_monotonic_now() - self._state["motor"]["started_at_monotonic"])
             state["motor"]["current_run_seconds"] = run_sec
 
@@ -361,6 +383,7 @@ class StateManager:
         rssi: int,
         boot: int = 0,
         nonce: Optional[int] = None,
+        env: Optional[Any] = None,
     ) -> None:
         async with self._lock:
             now = time.time()
@@ -382,10 +405,37 @@ class StateManager:
             g["reservoir_wet"] = res_wet
             g["reservoir_last_update_ts"] = now
 
+            if env:
+                t = getattr(env, "temp", None) if not isinstance(env, dict) else env.get("temp")
+                r = getattr(env, "rh", None) if not isinstance(env, dict) else env.get("rh")
+                p = getattr(env, "press", None) if not isinstance(env, dict) else env.get("press")
+                if t is not None and r is not None and p is not None:
+                    g["env"] = {
+                        "temp_c": round(float(t), 2),
+                        "rh_pct": round(float(r), 2),
+                        "pressure_hpa": round(float(p), 2),
+                        "last_update_ts": now,
+                    }
+
             for idx, p_state in enumerate(pumps):
                 z_key = f"zone_{idx + 1}"
                 if z_key in g["zones"]:
                     g["zones"][z_key]["pump_running"] = bool(p_state)
+
+    async def update_garden_env(self, temp_c: float, rh_pct: float, pressure_hpa: float) -> None:
+        """Records BME280 temperature, humidity, and pressure from garden node."""
+        async with self._lock:
+            now = time.time()
+            g = self._state["garden"]
+            g["node_online"] = True
+            g["node_last_seen"] = now
+            g["last_packet_ts"] = now
+            g["env"] = {
+                "temp_c": round(float(temp_c), 2),
+                "rh_pct": round(float(rh_pct), 2),
+                "pressure_hpa": round(float(pressure_hpa), 2),
+                "last_update_ts": now,
+            }
 
     async def update_garden_soil(self, zone_idx: int, volts: float, n_samples: int = 8) -> None:
         async with self._lock:
@@ -425,6 +475,22 @@ class StateManager:
                 z["flow_period_ms"] = period_ms
                 z["flow_pulses"] = z.get("flow_pulses", 0) + delta_pulses
                 z["last_update_ts"] = now
+
+                # Calculate litres delivered using flow K-factor
+                z_cfg = system_config.zones.get(z_key)
+                k_factor = z_cfg.flow_k_factor if z_cfg else 7.5
+                pulses_per_l = k_factor * 60.0
+                delta_litres = delta_pulses / max(1.0, pulses_per_l)
+
+                # Reset daily counter at date rollover
+                today_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                if getattr(self, "_last_zone_litres_day", None) != today_date:
+                    self._last_zone_litres_day = today_date
+                    for z_item in g["zones"].values():
+                        z_item["daily_litres"] = 0.0
+
+                z["daily_litres"] = round(z.get("daily_litres", 0.0) + delta_litres, 3)
+
 
     async def update_garden_pump(self, zone_idx: int, is_on: bool, reason: str = "unknown") -> None:
         async with self._lock:
@@ -515,6 +581,11 @@ class StateManager:
                 self._state["garden"]["zones"][zone_key]["cooldown_until_ts"] = until_epoch
             # Persist zone cooldown
             await self.save_lockout(f"cooldown_{zone_key}", {"cooldown_until": until_epoch})
+
+    async def set_zone_soak_active(self, zone_key: str, active: bool) -> None:
+        async with self._lock:
+            if zone_key in self._state["garden"]["zones"]:
+                self._state["garden"]["zones"][zone_key]["soak_active"] = active
 
     async def set_zone_flow_fault(self, zone_key: str, faulted: bool) -> None:
         async with self._lock:

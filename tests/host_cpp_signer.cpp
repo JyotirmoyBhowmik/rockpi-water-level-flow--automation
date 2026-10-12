@@ -73,6 +73,16 @@ int main(int argc, char* argv[]) {
         protocol_sign_in_place(buf, sizeof(buf), key.c_str());
         std::cout << buf;
 
+        // 11. Heartbeat with BME280 env (Node -> Pi)
+        format_hb_env_unsigned(buf, sizeof(buf), 1001, 8, 120, true, true, pumps, 1, -65, 24.500f, 55.200f, 1013.250f);
+        protocol_sign_in_place(buf, sizeof(buf), key.c_str());
+        std::cout << buf;
+
+        // 12. Standalone env packet (Node -> Pi)
+        format_env_unsigned(buf, sizeof(buf), 1001, 9, 24.500f, 55.200f, 1013.250f);
+        protocol_sign_in_place(buf, sizeof(buf), key.c_str());
+        std::cout << buf;
+
         return 0;
     } else if (mode == "--sign-line") {
         std::string line;

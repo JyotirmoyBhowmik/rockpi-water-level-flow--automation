@@ -3,7 +3,7 @@ Non-Bypassable Hardcoded Failsafes and Interlock Logic for Radxa ROCK Pi S Contr
 Enforces hardware interlock chain cause logic, motor protection, and plant irrigation guards.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -453,7 +453,27 @@ class FailsafeSafetyEngine:
                 rem_h = round((cooldown_until - now) / 3600.0, 1)
                 return False, f"Zone in cooldown protection ({rem_h}h remaining) to prevent root rot."
 
+            # Weather-Aware Skip Check
+            from app.engine.weather_service import weather_service
+            skip_active, skip_reason = weather_service.should_skip_watering()
+            if skip_active:
+                return False, f"Weather forecast skip active: {skip_reason}"
+
+            # Per-Zone Schedule (Time Windows) Check
+            current_hour = datetime.now(timezone.utc).hour
+            if not z_cfg.is_within_schedule(current_hour):
+                start = z_cfg.schedule_window_start
+                end = z_cfg.schedule_window_end
+                return False, f"Outside allowed watering schedule window ({start:02d}:00 - {end:02d}:00)."
+
+            # Per-Zone Daily Water Budget Check
+            if z_cfg.daily_budget_litres is not None:
+                used_l = z_state.get("daily_litres", 0.0)
+                if used_l >= z_cfg.daily_budget_litres:
+                    return False, f"Daily watering budget reached ({used_l:.1f}L >= {z_cfg.daily_budget_litres:.1f}L limit)."
+
         return True, None
+
 
     def on_pump_started(self, zone_key: str, initial_pulses: int = 0) -> None:
         """Records start of pump run for flow verification."""

@@ -18,6 +18,7 @@ from app.hardware.gateway_driver import garden_gateway
 from app.hardware.gpio_driver import head_end_gpio
 from app.hardware.protocol import (
     AckPacket,
+    EnvPacket,
     FlowPacket,
     HeartbeatPacket,
     PumpEventPacket,
@@ -70,6 +71,7 @@ class SystemScheduler:
         pumps: list[int],
         rssi: int,
         nonce: int,
+        env: Optional[Any] = None,
     ) -> None:
         await state_manager.update_garden_heartbeat(
             seq=seq,
@@ -80,7 +82,11 @@ class SystemScheduler:
             rssi=rssi,
             nonce=nonce,
             boot=nonce,
+            env=env,
         )
+
+    async def _handle_env(self, temp: float, rh: float, press: float) -> None:
+        await state_manager.update_garden_env(temp_c=temp, rh_pct=rh, pressure_hpa=press)
 
     async def _handle_soil(self, zone_idx: int, volts: float) -> None:
         await state_manager.update_garden_soil(zone_idx, volts)
@@ -111,7 +117,11 @@ class SystemScheduler:
                 pumps=packet.pumps,
                 rssi=packet.rssi,
                 nonce=packet.nonce,
+                env=packet.env,
             )
+        elif isinstance(packet, EnvPacket):
+            if packet.temp is not None and packet.rh is not None and packet.press is not None:
+                await self._handle_env(temp=packet.temp, rh=packet.rh, press=packet.press)
         elif isinstance(packet, SoilPacket):
             await self._handle_soil(zone_idx=packet.z, volts=packet.volts)
         elif isinstance(packet, FlowPacket):
@@ -140,6 +150,13 @@ class SystemScheduler:
                     pumps=packet.get("pumps", [0, 0, 0, 0]),
                     rssi=packet.get("rssi", 0),
                     nonce=packet.get("nonce", packet.get("boot", 0)),
+                    env=packet.get("env"),
+                )
+            elif ptype == "env":
+                await self._handle_env(
+                    temp=float(packet.get("temp", 0.0)),
+                    rh=float(packet.get("rh", 0.0)),
+                    press=float(packet.get("press", 0.0)),
                 )
             elif ptype == "soil":
                 await self._handle_soil(
@@ -195,6 +212,10 @@ class SystemScheduler:
                 level_reading = await level_sensor.read_telemetry()
                 if level_reading is not None:
                     await state_manager.update_level_sensor(level_reading.to_dict())
+
+                # 2d. Update weather forecast if due
+                from app.engine.weather_service import weather_service
+                await weather_service.fetch_forecast_if_due()
 
                 # 3. Check staleness
                 await state_manager.check_staleness()

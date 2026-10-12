@@ -113,6 +113,17 @@ level_sensor:
   night_leak_window_end: 4         # Hour (0-23) when night window ends (04:00)
   night_leak_max_drop_litres: 15.0 # Max allowable level drop in Litres during night window
 
+# Weather-Aware Irrigation Skip (Open-Meteo Forecast, No API Key Required)
+weather:
+  enabled: false                   # Enable Open-Meteo forecast checks
+  latitude: 0.0                    # Decimal latitude (e.g. 12.9716)
+  longitude: 0.0                   # Decimal longitude (e.g. 77.5946)
+  poll_interval_hours: 3.0         # Hours between Open-Meteo forecast API calls
+  forecast_lookahead_hours: 12     # Window ahead to evaluate rain probability
+  rain_prob_threshold_pct: 60.0    # Rain probability % to trigger watering skip
+  past_rain_threshold_mm: 5.0      # Past 24h rainfall mm to trigger watering skip
+  timeout_seconds: 10.0            # HTTP timeout for weather forecast API requests
+
 # Plant Irrigation Zones (ESP32-C3 Wireless Node)
 zones:
   zone_1:
@@ -125,6 +136,13 @@ zones:
     flow_meter_model: "YF-S201"    # Hall-effect flow sensor model
     flow_k_factor: 7.5             # K-factor in Hz per L/min (7.5 for YF-S201 = 450 pulses/L)
     min_pulses_10s: 5              # Minimum expected flow pulses in 10s
+    schedule_window_start: null    # Hour (0-23) allowed window begins (e.g. 6 for 06:00)
+    schedule_window_end: null      # Hour (0-23) allowed window ends (e.g. 9 for 09:00)
+    soak_cycle_enabled: false      # Enable multi-pulse soak irrigation (pulse + wait + pulse)
+    soak_pulse_seconds: 15         # Duration of each individual soak pulse in seconds
+    soak_wait_seconds: 60          # Rest duration between pulses in seconds to allow absorption
+    soak_pulse_count: 3            # Number of pulses in the soak sequence
+    daily_budget_litres: null      # Optional daily water limit in litres (null = unlimited)
     calibration:
       dry_v: null                  # In air voltage (e.g. 2.70V). Uncalibrated = cannot auto-water
       wet_v: null                  # In water voltage (e.g. 1.20V)
@@ -137,6 +155,13 @@ zones:
     cooldown_hours: 6.0
     has_flow_meter: false
     min_pulses_10s: 0
+    schedule_window_start: null
+    schedule_window_end: null
+    soak_cycle_enabled: false
+    soak_pulse_seconds: 15
+    soak_wait_seconds: 60
+    soak_pulse_count: 3
+    daily_budget_litres: null
     calibration:
       dry_v: null
       wet_v: null
@@ -149,6 +174,13 @@ zones:
     cooldown_hours: 6.0
     has_flow_meter: false
     min_pulses_10s: 0
+    schedule_window_start: null
+    schedule_window_end: null
+    soak_cycle_enabled: false
+    soak_pulse_seconds: 15
+    soak_wait_seconds: 60
+    soak_pulse_count: 3
+    daily_budget_litres: null
     calibration:
       dry_v: null
       wet_v: null
@@ -161,6 +193,13 @@ zones:
     cooldown_hours: 6.0
     has_flow_meter: false
     min_pulses_10s: 0
+    schedule_window_start: null
+    schedule_window_end: null
+    soak_cycle_enabled: false
+    soak_pulse_seconds: 15
+    soak_wait_seconds: 60
+    soak_pulse_count: 3
+    daily_budget_litres: null
     calibration:
       dry_v: null
       wet_v: null

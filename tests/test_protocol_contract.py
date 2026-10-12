@@ -33,11 +33,14 @@ from app.hardware.protocol import (
     SoilPacket,
     StopAllPacket,
     StopPacket,
+    EnvPacket,
     compute_sig16,
     format_ack_unsigned,
     format_cmd_unsigned,
     format_flow_unsigned,
     format_hb_unsigned,
+    format_hb_env_unsigned,
+    format_env_unsigned,
     format_pump_unsigned,
     format_soil_unsigned,
     format_stop_all_unsigned,
@@ -115,7 +118,7 @@ def test_cpp_generated_packets_verified_by_python():
         check=True
     )
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-    assert len(lines) == 10, f"Expected 10 packets from C++ signer, got {len(lines)}"
+    assert len(lines) == 12, f"Expected 12 packets from C++ signer, got {len(lines)}"
 
     seq_tracker = SequenceTracker()
     parsed_packets = []
@@ -163,6 +166,17 @@ def test_cpp_generated_packets_verified_by_python():
     assert parsed_packets[9].status == "err"
     assert parsed_packets[9].err == 'err: "timeout" \\ fault'
 
+    assert isinstance(parsed_packets[10], HeartbeatPacket)
+    assert parsed_packets[10].env is not None
+    assert abs(parsed_packets[10].env.temp - 24.5) < 0.001
+    assert abs(parsed_packets[10].env.rh - 55.2) < 0.001
+    assert abs(parsed_packets[10].env.press - 1013.25) < 0.001
+
+    assert isinstance(parsed_packets[11], EnvPacket)
+    assert abs((parsed_packets[11].temp or 0.0) - 24.5) < 0.001
+    assert abs((parsed_packets[11].rh or 0.0) - 55.2) < 0.001
+    assert abs((parsed_packets[11].press or 0.0) - 1013.25) < 0.001
+
 
 def test_python_generated_packets_verified_by_cpp():
     """
@@ -184,6 +198,8 @@ def test_python_generated_packets_verified_by_cpp():
         sign_packet_string(format_stop_all_unsigned(nonce, 8, "cmd-102"), SHARED_KEY),
         sign_packet_string(format_pump_unsigned(nonce, 9, 1, False, 'fault: "sensor" \\ timeout', 10), SHARED_KEY),
         sign_packet_string(format_ack_unsigned(nonce, 10, 'cmd:"001"\\test', "err", 'err: "timeout" \\ fault'), SHARED_KEY),
+        sign_packet_string(format_hb_env_unsigned(nonce, 11, 300, True, True, [0, 0, 0, 0], 0, -60, 24.5, 55.2, 1013.25), SHARED_KEY),
+        sign_packet_string(format_env_unsigned(nonce, 12, 24.5, 55.2, 1013.25), SHARED_KEY),
     ]
 
     stdin_input = "".join(python_packets)

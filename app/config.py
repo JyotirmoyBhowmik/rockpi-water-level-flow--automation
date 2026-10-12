@@ -232,6 +232,21 @@ class ZoneCalibration(BaseModel):
     margin_v: float = Field(default=0.20, ge=0.05, le=1.0, description="Sanity band margin around calibrated extremes")
 
 
+class WeatherConfig(BaseModel):
+    """
+    Configuration for Open-Meteo weather forecast polling and smart irrigation skips.
+    Free, open API (no API key required).
+    """
+    enabled: bool = Field(default=False, description="Enable Open-Meteo weather-aware irrigation skips")
+    latitude: float = Field(default=0.0, ge=-90.0, le=90.0, description="Latitude for Open-Meteo weather forecast")
+    longitude: float = Field(default=0.0, ge=-180.0, le=180.0, description="Longitude for Open-Meteo weather forecast")
+    poll_interval_hours: float = Field(default=3.0, ge=1.0, le=24.0, description="Forecast polling frequency in hours (default 3h)")
+    forecast_lookahead_hours: int = Field(default=12, ge=1, le=48, description="Lookahead window in hours to evaluate rain probability")
+    rain_prob_threshold_pct: float = Field(default=60.0, ge=0.0, le=100.0, description="Rain probability threshold (%) to skip watering")
+    past_rain_threshold_mm: float = Field(default=5.0, ge=0.0, le=200.0, description="Rainfall in last 24h (mm) threshold to skip watering")
+    timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0, description="HTTP request timeout in seconds")
+
+
 class ZoneConfig(BaseModel):
     name: str = Field(default="")
     enabled: bool = Field(default=False)
@@ -244,6 +259,28 @@ class ZoneConfig(BaseModel):
     flow_k_factor: float = Field(default=7.5, ge=0.1, le=100.0, description="K-factor in Hz per L/min (7.5 for YF-S201 = 450 pulses/L)")
     min_pulses_10s: int = Field(default=5, ge=0)
     calibration: ZoneCalibration = Field(default_factory=ZoneCalibration)
+    # Schedule Window (Time Windows)
+    schedule_window_start: Optional[int] = Field(default=None, ge=0, le=23, description="Allowed watering window start hour (0-23)")
+    schedule_window_end: Optional[int] = Field(default=None, ge=0, le=23, description="Allowed watering window end hour (0-23)")
+    # Soak Cycles (pulse + wait + pulse)
+    soak_cycle_enabled: bool = Field(default=False, description="Enable soak cycles (pulse + wait + pulse) to prevent runoff")
+    soak_pulse_seconds: int = Field(default=15, ge=1, le=60, description="Duration in seconds of each pulse in soak cycle")
+    soak_wait_seconds: int = Field(default=120, ge=5, le=1800, description="Rest/soak interval between pulses in seconds")
+    soak_pulse_count: int = Field(default=2, ge=1, le=10, description="Number of pulses per soak cycle")
+    # Daily Budget
+    daily_budget_litres: Optional[float] = Field(default=None, ge=0.1, le=1000.0, description="Maximum water budget per zone per day in Litres")
+
+    def is_within_schedule(self, current_hour: int) -> bool:
+        """Determines whether current hour is within allowed watering schedule window."""
+        if self.schedule_window_start is None or self.schedule_window_end is None:
+            return True
+        start = self.schedule_window_start
+        end = self.schedule_window_end
+        if start <= end:
+            return start <= current_hour < end
+        else:  # Midnight crossing, e.g. 22:00 to 04:00
+            return current_hour >= start or current_hour < end
+
 
 
 class AudioConfig(BaseModel):
@@ -289,7 +326,9 @@ class SystemConfig(BaseModel):
     motor: MotorConfig = Field(default_factory=MotorConfig)
     power_meter: PowerMeterConfig = Field(default_factory=PowerMeterConfig)
     level_sensor: LevelSensorConfig = Field(default_factory=LevelSensorConfig)
+    weather: WeatherConfig = Field(default_factory=WeatherConfig)
     zones: Dict[str, ZoneConfig] = Field(default_factory=lambda: {
+
         f"zone_{i}": ZoneConfig(name=f"Zone {i}", has_flow_meter=(i == 1)) for i in range(1, 5)
     })
     audio: AudioConfig = Field(default_factory=AudioConfig)

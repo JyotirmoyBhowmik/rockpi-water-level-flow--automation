@@ -175,6 +175,24 @@ static inline int format_hb_unsigned(char *buf, size_t size, uint32_t nonce, uin
         reset_reason, rssi);
 }
 
+static inline int format_hb_env_unsigned(char *buf, size_t size, uint32_t nonce, uint32_t seq,
+                                         uint32_t uptime_s, bool res_wet, bool ads_ok,
+                                         const int pumps[4], int reset_reason, int rssi,
+                                         float temp, float rh, float press) {
+    return snprintf(buf, size,
+        "{\"v\":\"1.1\",\"t\":\"hb\",\"nonce\":%u,\"seq\":%u,\"uptime_s\":%u,\"res_wet\":%s,\"ads_ok\":%s,\"pumps\":[%d,%d,%d,%d],\"reset_reason\":%d,\"rssi\":%d,\"env\":{\"temp\":%.3f,\"rh\":%.3f,\"press\":%.3f}}",
+        nonce, seq, uptime_s, res_wet ? "true" : "false", ads_ok ? "true" : "false",
+        pumps[0] ? 1 : 0, pumps[1] ? 1 : 0, pumps[2] ? 1 : 0, pumps[3] ? 1 : 0,
+        reset_reason, rssi, temp, rh, press);
+}
+
+static inline int format_env_unsigned(char *buf, size_t size, uint32_t nonce, uint32_t seq,
+                                      float temp, float rh, float press) {
+    return snprintf(buf, size,
+        "{\"v\":\"1.1\",\"t\":\"env\",\"nonce\":%u,\"seq\":%u,\"temp\":%.3f,\"rh\":%.3f,\"press\":%.3f}",
+        nonce, seq, temp, rh, press);
+}
+
 static inline int format_soil_unsigned(char *buf, size_t size, uint32_t nonce, uint32_t seq,
                                       int z, float volts) {
     return snprintf(buf, size,
