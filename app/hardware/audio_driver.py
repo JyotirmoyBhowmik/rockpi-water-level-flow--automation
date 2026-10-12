@@ -9,7 +9,7 @@ from datetime import datetime
 import logging
 import shutil
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from app.config import system_config
 
 import re
@@ -54,7 +54,7 @@ class VoiceAlertSynthesizer:
                 "espeak-ng or aplay not found in system PATH. Voice alerts will be logged to system journal only."
             )
 
-        self._queue = asyncio.Queue()
+        self._queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=32)
         self._running = True
         self._worker_task = asyncio.create_task(self._playback_worker(), name="audio_playback_worker")
         logger.info("VoiceAlertSynthesizer started.")
@@ -88,7 +88,10 @@ class VoiceAlertSynthesizer:
             return
 
         if self._queue is not None:
-            await self._queue.put({"text": text, "priority": priority, "created_at": now})
+            try:
+                self._queue.put_nowait({"text": text, "priority": priority, "created_at": now})
+            except asyncio.QueueFull:
+                logger.warning("Audio alert queue is full (32 items); dropping message: %s", text)
 
     def _is_in_quiet_hours(self) -> bool:
         """Checks if current time falls within configured quiet hours."""
@@ -145,8 +148,20 @@ class VoiceAlertSynthesizer:
                             stderr=asyncio.subprocess.DEVNULL,
                         )
 
-                        # Wait for pipeline completion
-                        await asyncio.gather(espeak_proc.wait(), aplay_proc.wait())
+                        # Wait for pipeline completion with 10.0s timeout to prevent ALSA deadlock
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.gather(espeak_proc.wait(), aplay_proc.wait()),
+                                timeout=10.0,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error("Audio playback timed out after 10s; terminating pipeline.")
+                            for proc in (espeak_proc, aplay_proc):
+                                try:
+                                    proc.kill()
+                                except ProcessLookupError:
+                                    pass
+                            raise
                     except Exception as e:
                         logger.error("Error invoking ALSA speech pipeline: %s", e)
                         if item.get("priority", 1) <= 1:

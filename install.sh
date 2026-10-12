@@ -292,6 +292,7 @@ usermod -aG gpio,i2c,dialout,audio smartwater
 # ------------------------------------------------------------------------------
 echo -e "${GREEN}[3/8] Preparing directory structure and permissions (A/B layout)...${NC}"
 mkdir -p "${SLOT_A}"
+mkdir -p "${SLOT_B}"
 mkdir -p "${CONFIG_DIR}"
 mkdir -p "${DATA_DIR}"
 mkdir -p "${DATA_DIR}/backups"

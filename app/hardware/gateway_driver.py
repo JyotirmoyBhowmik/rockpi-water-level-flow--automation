@@ -95,6 +95,9 @@ class GardenGatewayDriver:
 
     async def start(self) -> None:
         """Starts the gateway serial receiver loop."""
+        if not system_config.garden_gateway.enabled:
+            logger.info("Garden gateway disabled in configuration; serial worker not started.")
+            return
         if self._running:
             return
         self._running = True
