@@ -96,9 +96,27 @@ class StaleThresholdsConfig(BaseModel):
     soil_s: int = Field(default=60, ge=10, le=300, description="Max age for individual soil probe reading")
     reservoir_s: int = Field(default=20, ge=5, le=120, description="Max age for reservoir float status")
     heartbeat_s: int = Field(default=30, ge=10, le=120, description="Max age for node heartbeat")
-    max_soil_age_s: int = Field(default=60, ge=10, le=300, description="Max age for individual soil probe reading")
-    max_reservoir_age_s: int = Field(default=20, ge=5, le=120, description="Max age for reservoir float status")
-    max_heartbeat_age_s: int = Field(default=30, ge=10, le=120, description="Max age for node heartbeat")
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_deprecated_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            key_mapping = {
+                "max_soil_age_s": "soil_s",
+                "max_reservoir_age_s": "reservoir_s",
+                "max_heartbeat_age_s": "heartbeat_s",
+            }
+            for old_key, new_key in key_mapping.items():
+                if old_key in data:
+                    val = data.pop(old_key)
+                    logger.warning(
+                        "Deprecated configuration key '%s' found in stale_thresholds; migrating to '%s'",
+                        old_key,
+                        new_key,
+                    )
+                    if new_key not in data:
+                        data[new_key] = val
+        return data
 
 
 class NetworkConfig(BaseModel):
@@ -310,6 +328,24 @@ def load_config() -> SystemConfig:
 
     # Install timestamp
     merged["install_timestamp"] = get_install_timestamp()
+
+    # Migrate deprecated stale threshold keys in load_config
+    if "stale_thresholds" in merged and isinstance(merged["stale_thresholds"], dict):
+        key_mapping = {
+            "max_soil_age_s": "soil_s",
+            "max_reservoir_age_s": "reservoir_s",
+            "max_heartbeat_age_s": "heartbeat_s",
+        }
+        for old_key, new_key in key_mapping.items():
+            if old_key in merged["stale_thresholds"]:
+                val = merged["stale_thresholds"].pop(old_key)
+                logger.warning(
+                    "Deprecated configuration key '%s' found in stale_thresholds; migrating to '%s'",
+                    old_key,
+                    new_key,
+                )
+                if new_key not in merged["stale_thresholds"]:
+                    merged["stale_thresholds"][new_key] = val
 
     try:
         cfg = SystemConfig(**merged)

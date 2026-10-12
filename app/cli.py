@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+from app import __version__
 from app.core.security import security_manager
 from app.core.state_manager import state_manager
 
@@ -134,7 +135,7 @@ def main():
     elif cmd == "gen-espnow-secrets":
         gen_espnow_secrets()
     elif cmd == "version":
-        print("Radxa ROCK Pi S Smart Water Controller v1.1.0")
+        print(f"Radxa ROCK Pi S Smart Water Controller v{__version__}")
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)

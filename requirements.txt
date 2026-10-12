@@ -1,5 +1,6 @@
-# Core Framework & Low-Overhead ASGI Server (Pinned for Armbian Debian 12)
-fastapi==0.115.0
+# Core Framework & Low-Overhead ASGI Server (Pinned for Armbian Debian 12 Python 3.11 aarch64)
+fastapi==0.143.0
+starlette==1.7.0
 uvicorn==0.54.0
 h11==0.16.0
 pydantic==2.14.0

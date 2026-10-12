@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import __version__
 from app.api.routes_config import router as config_router
 from app.api.routes_control import router as control_router
 from app.api.routes_rules import router as rules_router
@@ -156,7 +157,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Radxa Smart Water Controller",
-        version="1.0.0",
+        version=__version__,
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -305,7 +306,7 @@ def create_app() -> FastAPI:
         state = state_manager.get_state()
         return {
             "status": "healthy",
-            "version": "1.0.0",
+            "version": __version__,
             "system_status": state["system_status"],
             "hardware_ready": state["hardware_ready"],
             "uptime_seconds": state["uptime_seconds"],

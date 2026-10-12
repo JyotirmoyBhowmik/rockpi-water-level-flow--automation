@@ -298,7 +298,7 @@ class FailsafeSafetyEngine:
         now = time.time()
 
         # 1. Gateway & Heartbeat Staleness Check (Part 4.1)
-        max_hb_age = getattr(system_config.stale_thresholds, "max_heartbeat_age_s", system_config.stale_thresholds.heartbeat_s)
+        max_hb_age = system_config.stale_thresholds.heartbeat_s
         last_hb = g.get("last_heartbeat_ts") or g.get("last_packet_ts") or g.get("gateway_last_seen") or g.get("node_last_seen")
         is_hb_stale = g.get("is_stale", False) or (last_hb is not None and (now - last_hb) > max_hb_age)
         if not g.get("gateway_connected") or not g.get("node_online") or is_hb_stale:
@@ -306,7 +306,7 @@ class FailsafeSafetyEngine:
             return False, f"Garden node telemetry is STALE or link lost (heartbeat {hb_age}s > {max_hb_age}s limit). Plant watering locked."
 
         # 2. Reservoir Float Staleness & Dry Check (Part 4.1: stale reservoir locks ALL pumps)
-        max_res_age = getattr(system_config.stale_thresholds, "max_reservoir_age_s", system_config.stale_thresholds.reservoir_s)
+        max_res_age = system_config.stale_thresholds.reservoir_s
         res_ts = g.get("reservoir_last_update_ts")
         if res_ts is not None and (now - res_ts) > max_res_age:
             res_age = int(now - res_ts)
@@ -337,7 +337,7 @@ class FailsafeSafetyEngine:
 
         # Probe Sanity Band & Staleness Check (Part 4.1: stale soil locks ONLY that zone's auto-watering)
         z_state = g["zones"].get(zone_key, {})
-        max_soil_age = getattr(system_config.stale_thresholds, "max_soil_age_s", system_config.stale_thresholds.soil_s)
+        max_soil_age = system_config.stale_thresholds.soil_s
         z_last_ts = z_state.get("last_update_ts")
         if not is_manual:
             if z_last_ts is None or (now - z_last_ts) > max_soil_age:

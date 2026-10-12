@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+"""
+Automated Configuration Documentation Generator.
+Introspects Pydantic models in app/config.py and generates docs/CONFIG.md.
+Ensures documentation never drifts from code schemas.
+
+Usage:
+    python tools/gen_config_docs.py           # Generate / update docs/CONFIG.md
+    python tools/gen_config_docs.py --check   # Check for drift (exits 1 on diff for CI)
+"""
+
+import argparse
+import difflib
+from pathlib import Path
+import sys
+from typing import Any, List, Type, get_args, get_origin
+
+# Ensure repository root is in sys.path
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from pydantic import BaseModel, SecretStr  # noqa: E402
+from app import __version__  # noqa: E402
+from app.config import (  # noqa: E402
+    AudioConfig,
+    DatabaseConfig,
+    GardenGatewayConfig,
+    HeadEndConfig,
+    MotorConfig,
+    NetworkConfig,
+    SecurityConfig,
+    SetupChecks,
+    StaleThresholdsConfig,
+    TelegramConfig,
+    WatchdogConfig,
+    ZoneCalibration,
+    ZoneConfig,
+)
+
+
+def format_type(tp: Any) -> str:
+    """Formats a type annotation into a clean markdown-friendly string."""
+    origin = get_origin(tp)
+    if origin is None:
+        if hasattr(tp, "__name__"):
+            return f"`{tp.__name__}`"
+        return f"`{str(tp)}`"
+
+    # Union / Optional
+    args = get_args(tp)
+    if type(None) in args:
+        non_none = [a for a in args if a is not type(None)]
+        if len(non_none) == 1:
+            inner = format_type(non_none[0]).strip("`")
+            return f"`Optional[{inner}]`"
+        inner = ", ".join(format_type(a).strip("`") for a in non_none)
+        return f"`Optional[Union[{inner}]]`"
+
+    name = getattr(origin, "__name__", str(origin))
+    args_str = ", ".join(format_type(a).strip("`") for a in args)
+    return f"`{name}[{args_str}]`"
+
+
+def format_default(val: Any) -> str:
+    """Formats a default value into markdown code."""
+    if val is None:
+        return "`null`"
+    if isinstance(val, bool):
+        return f"`{str(val).lower()}`"
+    if isinstance(val, (int, float)):
+        return f"`{val}`"
+    if isinstance(val, str):
+        if not val:
+            return '`""`'
+        return f"`{val}`"
+    if isinstance(val, (list, dict)):
+        if not val:
+            return "`[]`" if isinstance(val, list) else "`{}`"
+        return f"`{val}`"
+    if isinstance(val, SecretStr):
+        return "`null`"
+    if isinstance(val, BaseModel):
+        return f"`{val.__class__.__name__}()`"
+    return f"`{val}`"
+
+
+def format_constraints(metadata: List[Any]) -> str:
+    """Extracts validation constraints (ge, le, min_length, etc.) from Pydantic metadata."""
+    if not metadata:
+        return "-"
+    parts = []
+    for item in metadata:
+        ge = getattr(item, "ge", None)
+        gt = getattr(item, "gt", None)
+        le = getattr(item, "le", None)
+        lt = getattr(item, "lt", None)
+        min_len = getattr(item, "min_length", None)
+        max_len = getattr(item, "max_length", None)
+
+        if ge is not None:
+            parts.append(f">= {ge}")
+        elif gt is not None:
+            parts.append(f"> {gt}")
+        if le is not None:
+            parts.append(f"<= {le}")
+        elif lt is not None:
+            parts.append(f"< {lt}")
+        if min_len is not None:
+            parts.append(f"min_length={min_len}")
+        if max_len is not None:
+            parts.append(f"max_length={max_len}")
+
+    return ", ".join(parts) if parts else "-"
+
+
+def generate_model_table(model: Type[BaseModel], title: str, description: str) -> str:
+    """Generates a Markdown table for a Pydantic model's fields."""
+    lines = [
+        f"### {title}",
+        "",
+        description,
+        "",
+        "| Field | Type | Default | Constraints | Description |",
+        "|---|---|---|---|---|",
+    ]
+
+    for field_name, field_info in model.model_fields.items():
+        tp = format_type(field_info.annotation)
+        dflt_val = field_info.default
+        if str(dflt_val) == "PydanticUndefined" or dflt_val is ...:
+            if field_info.default_factory is not None:
+                try:
+                    dflt_val = field_info.default_factory()
+                except Exception:
+                    dflt_val = None
+        dflt = format_default(dflt_val)
+        constraints = format_constraints(field_info.metadata)
+        desc = field_info.description or "-"
+        lines.append(f"| `{field_name}` | {tp} | {dflt} | {constraints} | {desc} |")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def generate_markdown() -> str:
+    """Generates the full CONFIG.md documentation string."""
+    sections = [
+        "# System Configuration Guide (`/etc/smart-water/config.yaml`)",
+        "",
+        f"> **System Version:** v{__version__}  ",
+        "> **Notice:** This document is automatically generated by `tools/gen_config_docs.py` from Pydantic schemas in `app/config.py`.  ",
+        "> **Do not edit manually.** Regenerate with `python tools/gen_config_docs.py` or verify in CI with `python tools/gen_config_docs.py --check`.",
+        "",
+        "---",
+        "",
+        "## 1. Overview & Storage Architecture",
+        "",
+        "The Smart Water & Precision Irrigation Controller strictly separates configuration into two distinct layers:",
+        "",
+        "1. **Bootstrap Configuration** (`/etc/smart-water/config.yaml`):",
+        "   - Read-only to the system service process (`root:smartwater 0640`).",
+        "   - Defines hardware pin bindings, serial ports, network bindings, and physical security parameters.",
+        "   - All hardware pins default to `null`. On fresh install, boots cleanly into `SAFE-NO-HARDWARE` mode with all outputs held OFF.",
+        "2. **Runtime Settings** (`/var/lib/smart-water/settings.yaml`):",
+        "   - Read-write to the system service process (`smartwater:smartwater 0600`).",
+        "   - Stores UI-editable parameters (zone pulse durations, probe calibrations, telegram alerts, wizard flags).",
+        "3. **Environment Override** (`SMART_WATER_DATA_DIR`):",
+        "   - If set, redirects persistent storage (`system.db`, `settings.yaml`, `auth.json`, `install_timestamp`).",
+        "",
+        "---",
+        "",
+        "## 2. Full Configuration Reference",
+        "",
+        "Below is a production example `/etc/smart-water/config.yaml`:",
+        "",
+        "```yaml",
+        "# ==============================================================================",
+        "# Radxa ROCK Pi S Smart Water & Precision Irrigation Controller Configuration",
+        "# Location: /etc/smart-water/config.yaml",
+        "# ==============================================================================",
+        "",
+        "# Head-End Hardwired IO (ROCK Pi S Header 1 via PC817 Optocoupler & Relay)",
+        "head_end:",
+        "  chip_path: null                  # e.g. \"/dev/gpiochip1\"",
+        "  tank_low_float_pin: null         # IN1: Float switch (Active-LOW, pull-up)",
+        "  interlock_out_pin: null          # IN2: Hardware chain output (HIGH = motor allowed)",
+        "  interlock_mid_pin: null          # IN3: Mid-point between Full and Sump floats",
+        "  leak_sensor_pin: null            # IN4: Optical/conductive leak sensor (Active-LOW)",
+        "  contactor_relay_pin: null        # Output: AC Contactor driver relay",
+        "  contactor_relay_active_high: true # true = HIGH to energize, false = LOW to energize",
+        "  relay_idle_bias_confirmed: null  # Must be 'pull_up' if active-low relay used",
+        "  contactor_feedback_pin: null     # Optional: Auxiliary contact feedback",
+        "  debounce_ms: 100                 # Hardware debounce filtering (10 - 1000 ms)",
+        "  tank_low_active_low: true        # IN1: true = LOW when float closed (PC817 open-collector)",
+        "  interlock_out_active_low: true   # IN2: true = LOW when chain energized (PC817 open-collector)",
+        "  interlock_mid_active_low: true   # IN3: true = LOW when mid-tap energized (PC817 open-collector)",
+        "  leak_active_low: true            # IN4: true = LOW when leak detected (PC817 open-collector)",
+        "  feedback_active_low: true        # Aux: true = LOW when aux contact closed (PC817 open-collector)",
+        "",
+        "# Garden Gateway (USB Serial Interface to ESP32-C3 Gateway)",
+        "garden_gateway:",
+        "  enabled: false",
+        "  serial_port: \"/dev/garden-gateway\" # Created by udev rule",
+        "  baud_rate: 115200",
+        "  link_loss_timeout_s: 30          # Threshold before raising LINK LOST alert",
+        "  shared_key: null                 # HMAC-SHA256 shared key (from: python -m app.cli gen-espnow-secrets)",
+        "",
+        "# Stale Data Timeouts (Stale data = unsafe data -> lock dependent actuators)",
+        "stale_thresholds:",
+        "  head_end_s: 15                   # Maximum acceptable age for head-end float readings",
+        "  garden_s: 90                     # Maximum acceptable age for wireless garden telemetry",
+        "  soil_s: 60                       # Max age for individual soil probe reading",
+        "  reservoir_s: 20                  # Max age for reservoir float status",
+        "  heartbeat_s: 30                  # Max age for node heartbeat",
+        "",
+        "# Network & Server Binding",
+        "network:",
+        "  bind_address: \"127.0.0.1\"        # Bind to 127.0.0.1 or Tailscale/Headscale IP",
+        "  port: 8000",
+        "  allow_all_interfaces: false      # Refuses 0.0.0.0 unless explicitly true",
+        "",
+        "# Security & Authentication",
+        "security:",
+        "  auth_token_file: \"/var/lib/smart-water/auth.json\"",
+        "  rate_limit_per_minute: 60",
+        "  auth_failure_limit: 10",
+        "  webhook_allowlist: []            # Host allowlist for rule webhooks (SSRF protection)",
+        "",
+        "# Motor Safety & Auto-Mode Parameters",
+        "motor:",
+        "  auto_mode: false                 # Automatic tank replenishment",
+        "  max_runtime_s: 900               # 15 minutes max continuous runtime",
+        "  cooldown_s: 1800                 # 30 minutes cooldown after max-runtime trip",
+        "  min_off_time_s: 120              # 120s mandatory rest between pump stop and next start",
+        "  pull_in_timeout_ms: 1000         # Max milliseconds to wait for contactor pull-in",
+        "  drop_out_timeout_ms: 1000        # Max milliseconds to wait for contactor drop-out",
+        "",
+        "# Wireless Garden Drip Zones (1-4)",
+        "zones:",
+        "  zone_1:",
+        "    name: \"Zone 1\"",
+        "    enabled: false",
+        "    soil_dry_threshold_pct: 35.0",
+        "    pulse_seconds: 15",
+        "    max_pulse_seconds: 60",
+        "    cooldown_hours: 6.0",
+        "    has_flow_meter: true",
+        "    min_pulses_10s: 5",
+        "    calibration:",
+        "      dry_v: null",
+        "      wet_v: null",
+        "      margin_v: 0.20",
+        "",
+        "# Synthesized Speech Audio Alerts (ALSA + espeak-ng)",
+        "audio:",
+        "  enabled: true",
+        "  alsa_device: \"default\"",
+        "  voice: \"en-us\"",
+        "  speed: 145",
+        "  quiet_hours_start: null",
+        "  quiet_hours_end: null",
+        "",
+        "# Telegram Bot Critical Notifications",
+        "telegram:",
+        "  enabled: false",
+        "  bot_token: null",
+        "  chat_id: null",
+        "",
+        "# SQLite WAL Database",
+        "database:",
+        "  path: \"/var/lib/smart-water/system.db\"",
+        "  retention_days: 90",
+        "  cache_size_kb: -2000",
+        "",
+        "# Hardware Watchdog Integration",
+        "watchdog:",
+        "  device_path: \"/dev/watchdog\"",
+        "  timeout_s: 15",
+        "  pet_interval_s: 2",
+        "",
+        "# Commissioning Status",
+        "setup_complete: false",
+        "```",
+        "",
+        "---",
+        "",
+        "## 3. Schema Reference by Subsystem",
+        "",
+        generate_model_table(HeadEndConfig, "HeadEndConfig (`head_end`)", "Configures direct SBC GPIO lines, optocoupler input polarities, relay drivers, and feedback contacts."),
+        generate_model_table(GardenGatewayConfig, "GardenGatewayConfig (`garden_gateway`)", "Configures the wireless ESP32-C3 serial CDC gateway connection, link-loss detection, and HMAC secret."),
+        generate_model_table(StaleThresholdsConfig, "StaleThresholdsConfig (`stale_thresholds`)", "Defines maximum acceptable telemetry ages. Any sensor reading older than its threshold transitions to STALE and locks dependent actuators."),
+        generate_model_table(NetworkConfig, "NetworkConfig (`network`)", "Controls HTTP API and SSE socket binding and interface isolation."),
+        generate_model_table(SecurityConfig, "SecurityConfig (`security`)", "Controls Bearer authentication token hashing, brute-force IP rate limits, and webhook SSRF allowlists."),
+        generate_model_table(MotorConfig, "MotorConfig (`motor`)", "Controls 230V AC overhead pump runtime ceilings, anti-short-cycling timers, cooldown periods, and contactor transition timeouts."),
+        generate_model_table(ZoneConfig, "ZoneConfig (`zones.<zone_id>`)", "Per-zone irrigation settings: moisture threshold, pulse limits, cooldown periods, and flow verification."),
+        generate_model_table(ZoneCalibration, "ZoneCalibration (`zones.<zone_id>.calibration`)", "Voltage calibration values for capacitive soil moisture probes."),
+        generate_model_table(AudioConfig, "AudioConfig (`audio`)", "Configures ALSA hardware sound device, espeak-ng voice synthesis, rate, and quiet hours."),
+        generate_model_table(TelegramConfig, "TelegramConfig (`telegram`)", "Configures out-of-band push notification dispatch for critical hardware alarms."),
+        generate_model_table(DatabaseConfig, "DatabaseConfig (`database`)", "Configures SQLite WAL storage path, PRAGMA cache memory allocation, and historical telemetry retention."),
+        generate_model_table(WatchdogConfig, "WatchdogConfig (`watchdog`)", "Configures Linux hardware watchdog (`/dev/watchdog`) pinging and loop heartbeat gating."),
+        generate_model_table(SetupChecks, "SetupChecks (`setup_checks`)", "Commissioning checklist tracking input checks, relay click tests, gateway pairing, and calibration."),
+        "",
+        "---",
+        "",
+        "## 4. Safety & Validation Rules",
+        "",
+        "1. **Zero Invented Pins:** Pin numbers default to `null`. The system refuses to invent arbitrary GPIO pins. If unassigned, outputs remain permanently OFF.",
+        "2. **Active-Low Relay Safety Guard:** If `contactor_relay_active_high` is `false`, `relay_idle_bias_confirmed` must be explicitly set to `'pull_up'`. If unconfirmed, the system disallows motor energization.",
+        "3. **Strict Network Binding:** Setting `bind_address` to `0.0.0.0` or `::` without `allow_all_interfaces: true` immediately throws a `ValueError` on startup.",
+        "4. **Zone Pulse Cap:** `max_pulse_seconds` is strictly validated `<= 60s`. Automatic watering pulses exceeding 60s are rejected by schema.",
+        "5. **Telemetry Staleness Locking:** When sensor telemetry exceeds its configured threshold, the controller disallows dependent automatic actuators.",
+        "6. **Exclusive Watchdog Ownership:** The application exclusively manages `/dev/watchdog`. Do not enable `RuntimeWatchdogSec` in systemd system.conf.",
+        "",
+    ]
+    return "\n".join(sections)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate CONFIG.md documentation from Pydantic models.")
+    parser.add_argument("--check", action="store_true", help="Fail with non-zero exit code if docs/CONFIG.md differs.")
+    parser.add_argument("--output", type=Path, default=REPO_ROOT / "docs" / "CONFIG.md", help="Target output file path.")
+    args = parser.parse_args()
+
+    content = generate_markdown()
+    target_path: Path = args.output
+
+    if args.check:
+        if not target_path.exists():
+            print(f"[FAIL] Target documentation file {target_path} does not exist.", file=sys.stderr)
+            sys.exit(1)
+        existing = target_path.read_text(encoding="utf-8")
+        if existing != content:
+            diff = difflib.unified_diff(
+                existing.splitlines(keepends=True),
+                content.splitlines(keepends=True),
+                fromfile=str(target_path),
+                tofile="generated",
+            )
+            print("[FAIL] docs/CONFIG.md is out of sync with app/config.py schemas! Diff:\n", file=sys.stderr)
+            sys.stderr.writelines(diff)
+            print("\nRun 'python tools/gen_config_docs.py' to synchronize documentation.", file=sys.stderr)
+            sys.exit(1)
+        print(f"[OK] {target_path} is completely up to date with Pydantic schemas.")
+        sys.exit(0)
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(content, encoding="utf-8")
+    print(f"[SUCCESS] Generated configuration documentation at {target_path}")
+
+
+if __name__ == "__main__":
+    main()

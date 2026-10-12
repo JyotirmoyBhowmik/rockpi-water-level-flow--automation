@@ -2,6 +2,29 @@
 
 All notable changes to the Radxa ROCK Pi S Smart Water & Precision Irrigation Controller are documented in this file.
 
+## [1.2.0] - 2026-10-12
+
+### Added
+- **Automated Configuration Documentation**:
+  - Implemented `tools/gen_config_docs.py` to auto-generate `docs/CONFIG.md` directly from Pydantic models.
+  - Added CI workflow drift check (`python tools/gen_config_docs.py --check`) failing automatically if docs drift from schema.
+- **Unified Single Version Source**:
+  - Centralized application version in `app.__version__ = "1.2.0"`.
+  - Harmonized version reporting across `run.py`, FastAPI application metadata, `/healthz` endpoint, and CLI `version`.
+
+### Changed
+- **Stale Thresholds Consolidation**:
+  - Removed duplicate stale threshold fields (`max_soil_age_s`, `max_reservoir_age_s`, `max_heartbeat_age_s`) in favor of canonical `_s` fields (`soil_s`, `reservoir_s`, `heartbeat_s`).
+  - Added backward-compatibility configuration migration in `load_config` that translates deprecated keys and logs explicit deprecation warnings.
+- **Framework Pinning & Monkey-Patch Removal**:
+  - Removed Starlette router monkey-patch shims from `app/__init__.py` and `app/api/__init__.py`.
+  - Pinned mutually compatible `fastapi==0.143.0`, `starlette==1.7.0`, `uvicorn==0.54.0`, and `pydantic==2.14.0` in `requirements.txt` for Python 3.11 aarch64.
+- **Security & Resilience Hardening**:
+  - Strict Content Security Policy (CSP) with zero inline scripts/styles across all UI templates and components.
+  - Webhook SSRF validation with asynchronous DNS offloading, IP pinning transport, and strict range filtering (blocking CGNAT, link-local, cloud metadata, and IPv6 ULA).
+  - Non-disarming watchdog stall exit policy to prevent hardware runaway.
+  - Strict nonce and monotonic boot count tracking in sequence replay defense.
+
 ## [1.1.0] - 2026-10-12
 
 ### Added

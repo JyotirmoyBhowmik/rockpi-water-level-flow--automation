@@ -961,3 +961,131 @@ async def test_telegram_client_plain_text_and_rate_limit(monkeypatch):
     assert "Critical water leak detected in basement!" in sent_requests[0]["text"]
 
 
+# -----------------------------------------------------------------------------
+# 21. Stale Thresholds Single Set & Backward-Compatibility Migration
+# -----------------------------------------------------------------------------
+def test_stale_thresholds_single_set_and_migration(caplog):
+    import logging
+    from app.config import StaleThresholdsConfig
+
+    # 1. StaleThresholdsConfig has exactly one set of fields
+    canonical_fields = {"head_end_s", "garden_s", "soil_s", "reservoir_s", "heartbeat_s"}
+    assert set(StaleThresholdsConfig.model_fields.keys()) == canonical_fields
+
+    # 2. Instantiating with deprecated keys migrates and logs warning
+    with caplog.at_level(logging.WARNING):
+        cfg = StaleThresholdsConfig.model_validate({
+            "head_end_s": 20,
+            "garden_s": 100,
+            "max_soil_age_s": 75,
+            "max_reservoir_age_s": 25,
+            "max_heartbeat_age_s": 35,
+        })
+
+    assert cfg.soil_s == 75
+    assert cfg.reservoir_s == 25
+    assert cfg.heartbeat_s == 35
+    assert not hasattr(cfg, "max_soil_age_s")
+
+    warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("max_soil_age_s" in w for w in warnings)
+    assert any("max_reservoir_age_s" in w for w in warnings)
+    assert any("max_heartbeat_age_s" in w for w in warnings)
+
+
+# -----------------------------------------------------------------------------
+# 22. Single Version Source (1.2.0)
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_single_version_source(tmp_path: Path):
+    import subprocess
+    import sys
+    from app import __version__
+
+    # 1. Single source of truth in app.__version__
+    assert __version__ == "1.2.0"
+
+    # 2. FastAPI app version metadata
+    app = create_app()
+    assert app.version == "1.2.0"
+
+    # 3. /healthz endpoint response
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.get("/healthz")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["version"] == "1.2.0"
+
+    # 4. CLI version command
+    proc = subprocess.run(
+        [sys.executable, "-m", "app.cli", "version"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "v1.2.0" in proc.stdout
+
+    # 5. CHANGELOG documents 1.2.0
+    changelog_file = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+    assert changelog_file.exists()
+    content = changelog_file.read_text(encoding="utf-8")
+    assert "## [1.2.0]" in content
+
+
+# -----------------------------------------------------------------------------
+# 23. Configuration Documentation Generator & CI Diff Verification
+# -----------------------------------------------------------------------------
+def test_config_docs_generator_and_check(tmp_path: Path):
+    import subprocess
+    import sys
+    from tools.gen_config_docs import generate_markdown
+
+    # 1. Output of generate_markdown contains all models
+    md = generate_markdown()
+    assert "# System Configuration Guide" in md
+    assert "HeadEndConfig (`head_end`)" in md
+    assert "StaleThresholdsConfig (`stale_thresholds`)" in md
+    assert "GardenGatewayConfig (`garden_gateway`)" in md
+    assert "MotorConfig (`motor`)" in md
+    assert "v1.2.0" in md
+
+    # 2. --check passes against current docs/CONFIG.md
+    check_proc = subprocess.run(
+        [sys.executable, "tools/gen_config_docs.py", "--check"],
+        capture_output=True,
+        text=True,
+    )
+    assert check_proc.returncode == 0
+    assert "[OK]" in check_proc.stdout
+
+    # 3. --check fails when file differs
+    temp_docs = tmp_path / "CONFIG.md"
+    temp_docs.write_text("Outdated docs", encoding="utf-8")
+    fail_proc = subprocess.run(
+        [sys.executable, "tools/gen_config_docs.py", "--check", "--output", str(temp_docs)],
+        capture_output=True,
+        text=True,
+    )
+    assert fail_proc.returncode != 0
+    assert "[FAIL]" in fail_proc.stderr
+
+
+# -----------------------------------------------------------------------------
+# 24. No Monkey-Patching of Starlette / FastAPI
+# -----------------------------------------------------------------------------
+def test_starlette_no_monkey_patches():
+    import starlette.routing
+    from fastapi import FastAPI, APIRouter
+
+    # Verify Router.__init__ is original unbound function without custom _safe_router_init
+    init_code = starlette.routing.Router.__init__.__code__
+    assert "_safe_router_init" not in init_code.co_name
+
+    # Verify FastAPI & APIRouter can be instantiated cleanly
+    router = APIRouter()
+    assert router is not None
+    app = FastAPI()
+    assert app is not None
+
+
+

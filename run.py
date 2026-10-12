@@ -4,6 +4,7 @@ Runs a single-process asynchronous ASGI runtime (uvicorn + FastAPI) strictly wit
 """
 
 import uvicorn
+from app import __version__
 from app.config import system_config
 
 
@@ -11,7 +12,7 @@ def main():
     """Runs uvicorn ASGI server with low-memory parameters."""
     print("=" * 72)
     print(" RADXA ROCK PI S - INDUSTRIAL SMART WATER CONTROLLER")
-    print(" Version: 1.0.0")
+    print(f" Version: {__version__}")
     print(f" Listening: http://{system_config.network.bind_address}:{system_config.network.port}")
     print(" Config: /etc/smart-water/config.yaml")
     print("=" * 72)
