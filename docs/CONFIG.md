@@ -142,3 +142,4 @@ setup_complete: false              # Set to true once Setup Wizard is completed
 2. **Strict Network Binding:** If `bind_address` is set to `0.0.0.0` or `::` while `allow_all_interfaces` is `false`, application startup will intentionally crash with an explicit safety exception.
 3. **Zone Pulse Cap:** `max_pulse_seconds` cannot exceed 60 seconds under any circumstances.
 4. **Stale Thresholds:** Cannot be configured below 5s or above 600s to avoid unsafe automation decisions on dead telemetry.
+5. **Exclusive Watchdog Ownership:** The controller application exclusively opens `/dev/watchdog` directly. Do **NOT** configure `RuntimeWatchdogSec` in `/etc/systemd/system.conf`, as Linux permits only a single owner on `/dev/watchdog`.

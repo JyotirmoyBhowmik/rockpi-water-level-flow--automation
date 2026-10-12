@@ -298,6 +298,11 @@ The DS3231 RTC module requires hardware I2C bus 7, and the hardware failsafe req
    ls -l /dev/watchdog
    ```
 
+> [!IMPORTANT]
+> **Single Watchdog Owner Policy (Do NOT set `RuntimeWatchdogSec` in `system.conf`):**
+> Linux kernel watchdog drivers allow only **ONE** process to open `/dev/watchdog` at a time. The Smart Water controller application exclusively opens `/dev/watchdog` directly so it can pet it conditionally based on internal loop health gating.
+> Do **NOT** set or enable `RuntimeWatchdogSec` in `/etc/systemd/system.conf`. If systemd opens `/dev/watchdog`, the application will fail to start or report `EBUSY`, and systemd would continue petting the watchdog even if controller automation loops stall.
+
 ---
 
 ### Step 4: Run the One-Click Installer (`install.sh`)

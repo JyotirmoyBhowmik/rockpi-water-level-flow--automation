@@ -7,6 +7,7 @@ RequiresMountsFor=/opt/smart-water
 
 [Service]
 Type=notify
+NotifyAccess=main
 User=smartwater
 Group=smartwater
 SupplementaryGroups=gpio i2c dialout audio
@@ -14,6 +15,9 @@ WorkingDirectory=/opt/smart-water
 ExecStart=/opt/smart-water/venv/bin/python /opt/smart-water/run.py
 Restart=always
 RestartSec=3s
+TimeoutStartSec=60
+TimeoutStopSec=10
+KillSignal=SIGTERM
 
 # ==============================================================================
 # MEMORY CGROUPS & WATCHDOG LIMITS (Relaxed to 128M / 200M)
@@ -28,6 +32,7 @@ WatchdogSec=15s
 # Automatic systemd state and runtime directory provisioning
 StateDirectory=smart-water
 RuntimeDirectory=smart-water
+ReadWritePaths=/var/lib/smart-water /run/smart-water
 
 # Environment configuration
 Environment=PYTHONUNBUFFERED=1
@@ -41,13 +46,13 @@ ProtectSystem=strict
 ProtectHome=true
 
 # Hardware Device Permissions
-DeviceAllow=/dev/gpiochip* rw
-DeviceAllow=/dev/i2c-* rw
-DeviceAllow=/dev/garden-gateway rw
-DeviceAllow=/dev/ttyUSB* rw
-DeviceAllow=/dev/ttyACM* rw
-DeviceAllow=/dev/watchdog rw
-DeviceAllow=/dev/snd/* rw
+DevicePolicy=closed
+DeviceAllow=char-gpiochip rw
+DeviceAllow=char-i2c rw
+DeviceAllow=char-ttyACM rw
+DeviceAllow=char-ttyUSB rw
+DeviceAllow=char-watchdog rw
+DeviceAllow=char-alsa rw
 
 # Logging
 StandardOutput=journal

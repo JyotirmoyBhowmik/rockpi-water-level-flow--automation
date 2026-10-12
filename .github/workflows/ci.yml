@@ -35,6 +35,14 @@ jobs:
       run: |
         shellcheck install.sh uninstall.sh
 
+    - name: Verify systemd service configuration
+      run: |
+        if command -v systemd-analyze >/dev/null 2>&1; then
+          systemd-analyze verify systemd/smart-water.service
+        else
+          echo "systemd-analyze not available, skipping"
+        fi
+
     - name: Run Python safety & protocol regression tests with coverage
       run: |
         pytest -v --cov=app --cov-report=term-missing

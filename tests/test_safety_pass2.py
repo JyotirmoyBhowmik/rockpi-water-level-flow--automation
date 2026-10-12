@@ -53,11 +53,16 @@ def test_watchdog_health_gating_and_stall_detection():
     healthy, reason = hm.check_health()
     assert healthy is True
 
-    # Simulate gateway reader loop stalled > 15.0s
-    hm._beats["gateway_reader"] = get_monotonic_now() - 16.0
-    healthy, reason = hm.check_health()
-    assert healthy is False
-    assert "gateway_reader" in reason
+    # Simulate gateway reader loop stalled > 15.0s (when gateway is enabled)
+    system_config.garden_gateway.enabled = True
+    try:
+        hm.enable()
+        hm._beats["gateway_reader"] = get_monotonic_now() - 16.0
+        healthy, reason = hm.check_health()
+        assert healthy is False
+        assert "gateway_reader" in reason
+    finally:
+        system_config.garden_gateway.enabled = False
 
 
 def test_systemd_ready_notification_sent():
@@ -80,6 +85,129 @@ def test_systemd_ready_notification_sent():
     msg, path = sent_payloads[0]
     assert b"READY=1" in msg
     assert path == "/run/systemd/notify"
+
+    # Second call must be idempotent and not send duplicate packets
+    res2 = wg.notify_ready()
+    assert res2 is True
+    assert len(sent_payloads) == 1
+
+
+@pytest.mark.asyncio
+async def test_watchdog_stall_forces_outputs_off_and_skips_v(monkeypatch):
+    """
+    On health-gating failure:
+    - force_all_outputs_off() must be called
+    - is_stall_exit must be set to True
+    - os._exit(2) must be called (exit code 2)
+    - Magic 'V' token must NOT be written to /dev/watchdog
+    """
+    import os
+    from app.core.watchdog import WatchdogGuardian, health_monitor
+    from app.hardware.gpio_driver import head_end_gpio
+
+    wg = WatchdogGuardian()
+    exit_codes = []
+    outputs_forced_off = False
+    written_bytes = []
+
+    async def mock_force_off():
+        nonlocal outputs_forced_off
+        outputs_forced_off = True
+
+    def mock_exit(code):
+        exit_codes.append(code)
+
+    monkeypatch.setattr(head_end_gpio, "force_all_outputs_off", mock_force_off)
+    wg._exit_func = mock_exit
+
+    wg._dev_fd = 999
+    wg._is_hardware_present = True
+
+    orig_write = os.write
+
+    def mock_os_write(fd, data):
+        if fd == 999:
+            written_bytes.append(data)
+            return len(data)
+        return orig_write(fd, data)
+
+    def mock_os_close(fd):
+        pass
+
+    monkeypatch.setattr(os, "write", mock_os_write)
+    monkeypatch.setattr(os, "close", mock_os_close)
+
+    # Enable health monitor and simulate head_end_poll loop stalled
+    health_monitor.enable()
+    health_monitor._beats["head_end_poll"] = get_monotonic_now() - 5.0
+
+    wg._running = True
+    task = asyncio.create_task(wg._heartbeat_loop())
+    await asyncio.sleep(0.02)
+    if not task.done():
+        task.cancel()
+
+    assert outputs_forced_off is True
+    assert wg.is_stall_exit is True
+    assert exit_codes == [2]
+
+    # Now verify that calling stop() on stall exit does NOT write 'V'
+    await wg.stop()
+    assert b"V" not in written_bytes
+
+
+@pytest.mark.asyncio
+async def test_watchdog_clean_shutdown_disarms_with_v(monkeypatch):
+    """Clean SIGTERM / intentional shutdown must write 'V' to /dev/watchdog to disarm."""
+    import os
+    from app.core.watchdog import WatchdogGuardian
+
+    wg = WatchdogGuardian()
+    written_bytes = []
+
+    wg._dev_fd = 999
+    wg._is_hardware_present = True
+    wg.is_stall_exit = False
+
+    orig_write = os.write
+
+    def mock_os_write(fd, data):
+        if fd == 999:
+            written_bytes.append(data)
+            return len(data)
+        return orig_write(fd, data)
+
+    def mock_os_close(fd):
+        pass
+
+    monkeypatch.setattr(os, "write", mock_os_write)
+    monkeypatch.setattr(os, "close", mock_os_close)
+
+    await wg.stop(disarm=True)
+    assert b"V" in written_bytes
+
+
+def test_watchdog_gateway_disabled_no_stall():
+    """If garden_gateway.enabled is False, gateway_reader is NOT registered and causes no stall."""
+    from app.core.watchdog import HealthMonitor
+
+    old_enabled = system_config.garden_gateway.enabled
+    try:
+        system_config.garden_gateway.enabled = False
+        hm = HealthMonitor()
+        hm.enable()
+
+        # gateway_reader must NOT be in monitored thresholds
+        assert "gateway_reader" not in hm._thresholds
+        assert "head_end_poll" in hm._thresholds
+        assert "rules_auto_loop" in hm._thresholds
+
+        # Even with no gateway beats ever recorded, health check passes
+        healthy, reason = hm.check_health()
+        assert healthy is True
+        assert reason is None
+    finally:
+        system_config.garden_gateway.enabled = old_enabled
 
 
 # -----------------------------------------------------------------------------

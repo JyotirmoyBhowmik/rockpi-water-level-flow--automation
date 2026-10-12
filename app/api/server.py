@@ -127,17 +127,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await scheduler.stop()
     await head_end_gpio.cleanup()
     await garden_gateway.stop()
-    await watchdog_manager.stop()
+    if watchdog_manager.is_stall_exit:
+        logger.warning("Watchdog stall exit flag active; stopping watchdog WITHOUT disarm.")
+        await watchdog_manager.stop(disarm=False)
+    else:
+        await watchdog_manager.stop(disarm=True)
     await telegram_notifier.stop()
     await audio_controller.stop()
     await bus.stop()
 
-    # Write clean shutdown marker (Part 4.3)
-    try:
-        clean_marker.touch()
-        logger.info("Clean shutdown marker written to %s", clean_marker)
-    except Exception as exc:
-        logger.warning("Could not write clean shutdown marker: %s", exc)
+    if not watchdog_manager.is_stall_exit:
+        # Write clean shutdown marker (Part 4.3)
+        try:
+            clean_marker.touch()
+            logger.info("Clean shutdown marker written to %s", clean_marker)
+        except Exception as exc:
+            logger.warning("Could not write clean shutdown marker: %s", exc)
+    else:
+        logger.warning("Clean shutdown marker NOT written due to watchdog stall exit.")
 
     logger.info("All subsystems safely de-energized.")
 

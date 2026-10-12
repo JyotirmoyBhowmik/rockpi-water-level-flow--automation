@@ -23,16 +23,22 @@ class HealthMonitor:
 
     def __init__(self):
         self._beats: Dict[str, float] = {}
-        # Maximum allowed silent intervals
-        self._thresholds: Dict[str, float] = {
+        self._thresholds: Dict[str, float] = {}
+        self._enabled = False
+        self._init_thresholds()
+
+    def _init_thresholds(self) -> None:
+        """Configures monitored loop thresholds, excluding gateway if disabled."""
+        self._thresholds = {
             "head_end_poll": 3.0,     # Must run every ~1s (max 3s)
             "rules_auto_loop": 15.0,  # Must run every ~5s (max 15s)
-            "gateway_reader": 15.0,   # Must cycle at least every 15s
         }
-        self._enabled = False
+        if system_config.garden_gateway.enabled:
+            self._thresholds["gateway_reader"] = 15.0
 
     def enable(self) -> None:
         """Enables gating once all critical tasks have started."""
+        self._init_thresholds()
         now = get_monotonic_now()
         for name in self._thresholds:
             self._beats[name] = now
@@ -88,11 +94,15 @@ class WatchdogGuardian:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._is_hardware_present = False
+        self.is_stall_exit: bool = False
+        self._ready_sent: bool = False
+        self._exit_func = os._exit
 
     async def start(self) -> None:
         if self._running:
             return
         self._running = True
+        self.is_stall_exit = False
 
         # 1. Systemd sd_notify socket initialization
         self._notify_path = os.getenv("NOTIFY_SOCKET")
@@ -117,8 +127,10 @@ class WatchdogGuardian:
         self._task = asyncio.create_task(self._heartbeat_loop(), name="watchdog_heartbeat")
         logger.info("WatchdogGuardian initialized.")
 
-    async def stop(self) -> None:
-        """Gracefully disarms watchdog with magic 'V' token before intentional exit."""
+    async def stop(self, disarm: bool = True) -> None:
+        """Gracefully disarms watchdog with magic 'V' token before intentional exit.
+        If disarm is False or is_stall_exit is True, skips writing 'V' so watchdog hardware remains armed.
+        """
         self._running = False
         health_monitor.disable()
 
@@ -131,9 +143,12 @@ class WatchdogGuardian:
 
         if self._dev_fd is not None:
             try:
-                os.write(self._dev_fd, b"V")
+                if disarm and not self.is_stall_exit:
+                    os.write(self._dev_fd, b"V")
+                    logger.info("Hardware watchdog cleanly disarmed with 'V'.")
+                else:
+                    logger.warning("Hardware watchdog closed WITHOUT disarm ('V' skipped due to stall/unclean exit).")
                 os.close(self._dev_fd)
-                logger.info("Hardware watchdog cleanly disarmed with 'V'.")
             except Exception as e:
                 logger.error("Error closing hardware watchdog: %s", e)
             finally:
@@ -153,15 +168,32 @@ class WatchdogGuardian:
                 # 1. Health gating check
                 is_healthy, reason = health_monitor.check_health()
                 if not is_healthy:
+                    self.is_stall_exit = True
                     logger.critical(
                         "WATCHDOG HEALTH GATING FAILURE: %s. "
-                        "FORCING RELAY OFF AND EXITING FOR SYSTEMD RESTART!",
+                        "FORCING RELAY OFF AND EXITING FOR SYSTEMD RESTART (NO 'V' DISARM)!",
                         reason,
                     )
-                    # Unconditionally de-energize relay
-                    await head_end_gpio.force_all_outputs_off()
-                    # Exit non-zero so systemd triggers Restart=always
-                    sys.exit(2)
+                    # Unconditionally de-energize all outputs
+                    try:
+                        await head_end_gpio.force_all_outputs_off()
+                    except Exception as e:
+                        logger.critical("Error forcing outputs off during watchdog stall: %s", e)
+
+                    # Flush all logs before hard exit
+                    try:
+                        for h in logging.getLogger().handlers:
+                            h.flush()
+                        for h in logger.handlers:
+                            h.flush()
+                        sys.stdout.flush()
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
+
+                    # Hard exit non-zero without writing 'V' so systemd restarts it
+                    self._exit_func(2)
+                    return
 
                 # 2. Pet watchdog handles
                 self._pet()
@@ -190,11 +222,14 @@ class WatchdogGuardian:
 
     def notify_ready(self) -> bool:
         """Sends READY=1 to systemd via $NOTIFY_SOCKET once all subsystems are online."""
+        if self._ready_sent:
+            return True
         if self._notify_sock and self._notify_path:
             try:
                 msg = b"READY=1\nSTATUS=Smart Water Controller online\n"
                 path = ("\0" + self._notify_path[1:]) if self._notify_path.startswith("@") else self._notify_path
                 self._notify_sock.sendto(msg, path)
+                self._ready_sent = True
                 logger.info("Sent READY=1 to systemd notify socket.")
                 return True
             except Exception as e:
