@@ -14,16 +14,16 @@ import logging
 from pathlib import Path
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, cast
 from app.config import DATA_DIR, system_config
 from app.hardware.rtc import get_monotonic_now, is_system_clock_valid
 
 logger = logging.getLogger("smart_water.state_manager")
 
 
-class StalenessResult(dict):
+class StalenessResult(dict[str, Any]):
     """Result object supporting both dict key access and (he_stale, gd_stale) tuple unpacking."""
-    def __init__(self, head_end_stale: bool, node_stale: bool, reservoir_stale: bool, zones_stale: Dict[str, bool]):
+    def __init__(self, head_end_stale: bool, node_stale: bool, reservoir_stale: bool, zones_stale: Dict[str, bool]) -> None:
         super().__init__({
             "head_end_stale": head_end_stale,
             "node_stale": node_stale,
@@ -35,7 +35,7 @@ class StalenessResult(dict):
         self.reservoir_stale = reservoir_stale
         self.zones_stale = zones_stale
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[bool]:  # type: ignore[override]
         return iter((self.head_end_stale, self.node_stale))
 
 
@@ -46,7 +46,7 @@ class StateManager:
     unconfigured hardware reports SAFE-NO-HARDWARE.
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None) -> None:
         self.db_path = Path(db_path or (DATA_DIR / "system.db"))
         self._lock = asyncio.Lock()
         self._start_monotonic = get_monotonic_now()
@@ -147,7 +147,7 @@ class StateManager:
             run_sec = int(get_monotonic_now() - self._state["motor"]["started_at_monotonic"])
             state["motor"]["current_run_seconds"] = run_sec
 
-        return state
+        return cast(dict[str, Any], state)
 
     # -------------------------------------------------------------------------
     # Head-End State Updates & Cause Logic
@@ -631,7 +631,7 @@ class StateManager:
         val_json = json.dumps(value)
         now = time.time()
 
-        def _sync_save():
+        def _sync_save() -> None:
             with self._get_connection() as conn:
                 conn.execute(
                     """
@@ -708,12 +708,12 @@ class StateManager:
         logger.info("Loaded %d persisted lockouts (clock_valid=%s)", len(rows), clock_valid)
         return len(rows)
 
-    async def log_event(self, event_type: str, severity: str, message: str, details: Optional[Dict] = None) -> None:
+    async def log_event(self, event_type: str, severity: str, message: str, details: Optional[Dict[str, Any]] = None) -> None:
         """Records an event in the events table."""
         ts = datetime.now(timezone.utc).isoformat()
         details_json = json.dumps(details or {})
 
-        def _insert():
+        def _insert() -> None:
             with self._get_connection() as conn:
                 conn.execute(
                     """
@@ -730,7 +730,7 @@ class StateManager:
         """Records completed actuator run in runs table."""
         ended_at_iso = datetime.now(timezone.utc).isoformat()
 
-        def _insert():
+        def _insert() -> None:
             with self._get_connection() as conn:
                 conn.execute(
                     """
@@ -764,6 +764,10 @@ class StateManager:
                 return deleted_events + deleted_readings
 
         return await asyncio.to_thread(_purge)
+
+    async def purge_old_data(self) -> int:
+        """Alias for purge_by_retention."""
+        return await self.purge_by_retention()
 
 
 state_manager = StateManager()

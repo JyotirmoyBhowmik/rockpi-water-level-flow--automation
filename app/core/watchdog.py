@@ -21,7 +21,7 @@ logger = logging.getLogger("smart_water.watchdog")
 class HealthMonitor:
     """Tracks heartbeat timestamps from critical loops."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._beats: Dict[str, float] = {}
         self._thresholds: Dict[str, float] = {}
         self._enabled = False
@@ -87,12 +87,12 @@ class WatchdogGuardian:
     2. systemd sd_notify watchdog socket ($NOTIFY_SOCKET)
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._dev_fd: Optional[int] = None
         self._notify_sock: Optional[socket.socket] = None
         self._notify_path: Optional[str] = None
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: Optional[asyncio.Task[None]] = None
         self._is_hardware_present = False
         self.is_stall_exit: bool = False
         self._ready_sent: bool = False
@@ -106,9 +106,10 @@ class WatchdogGuardian:
 
         # 1. Systemd sd_notify socket initialization
         self._notify_path = os.getenv("NOTIFY_SOCKET")
-        if self._notify_path:
+        af_unix = getattr(socket, "AF_UNIX", None)
+        if self._notify_path and af_unix is not None:
             try:
-                self._notify_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                self._notify_sock = socket.socket(af_unix, socket.SOCK_DGRAM)
                 logger.info("Systemd notify socket detected at %s", self._notify_path)
             except Exception as e:
                 logger.warning("Could not open systemd notify socket: %s", e)

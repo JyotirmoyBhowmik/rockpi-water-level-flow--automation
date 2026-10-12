@@ -23,7 +23,7 @@ class FailsafeSafetyEngine:
     Evaluates physical interlock chain, motor limits, link loss, and sensor sanity bands.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.wiring_fault_active = False
         self.motor_timeout_tripped = False
         self.motor_cooldown_until: float = 0.0

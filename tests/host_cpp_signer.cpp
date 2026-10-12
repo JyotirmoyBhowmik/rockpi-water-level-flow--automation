@@ -74,6 +74,18 @@ int main(int argc, char* argv[]) {
         std::cout << buf;
 
         return 0;
+    } else if (mode == "--sign-line") {
+        std::string line;
+        while (std::getline(std::cin, line)) {
+            if (line.empty()) continue;
+            char buf[1024];
+            strncpy(buf, line.c_str(), sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+            protocol_sign_in_place(buf, sizeof(buf), key.c_str());
+            std::cout << buf;
+            std::cout.flush();
+        }
+        return 0;
     } else if (mode == "--verify") {
         std::string line;
         while (std::getline(std::cin, line)) {
@@ -89,9 +101,11 @@ int main(int argc, char* argv[]) {
             } else {
                 std::cout << "FAIL\n";
             }
+            std::cout.flush();
         }
         return 0;
     }
+
 
     std::cerr << "Unknown mode: " << mode << "\n";
     return 1;

@@ -19,12 +19,12 @@ class EventBus:
     and isolated failure handling.
     """
 
-    def __init__(self, max_queue_size: int = 100):
+    def __init__(self, max_queue_size: int = 100) -> None:
         self._max_queue_size = max_queue_size
         self._subscribers: Dict[str, Set[EventHandler]] = {}
         self._wildcard_subscribers: Set[EventHandler] = set()
         self._queue: asyncio.Queue[tuple[str, Dict[str, Any]]] | None = None
-        self._worker_task: asyncio.Task | None = None
+        self._worker_task: asyncio.Task[None] | None = None
         self._running: bool = False
 
     async def start(self) -> None:
@@ -92,6 +92,9 @@ class EventBus:
     async def _process_queue(self) -> None:
         """Background worker that dispatches queued events to subscribers."""
         while self._running:
+            if self._queue is None:
+                await asyncio.sleep(0.05)
+                continue
             try:
                 topic, payload = await self._queue.get()
                 handlers: List[EventHandler] = list(self._subscribers.get(topic, set()))
@@ -102,7 +105,8 @@ class EventBus:
                     tasks = [asyncio.create_task(self._safe_execute(h, topic, payload)) for h in handlers]
                     await asyncio.gather(*tasks, return_exceptions=True)
 
-                self._queue.task_done()
+                if self._queue is not None:
+                    self._queue.task_done()
             except asyncio.CancelledError:
                 break
             except Exception as exc:

@@ -22,9 +22,9 @@ logger = logging.getLogger("smart_water.plants")
 class PlantIrrigationController:
     """Coordinates drip irrigation cycles across wireless ESP32 zones."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._active_runs: Dict[str, Dict[str, Any]] = {}
-        self._completion_tasks: Dict[str, asyncio.Task] = {}
+        self._completion_tasks: Dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
 
     async def trigger_zone_pulse(
@@ -100,7 +100,7 @@ class PlantIrrigationController:
             await bus.publish("pump:started", {"zone": zone_key, "duration_s": clamped_sec, "source": source})
 
             # Local fallback timer to record completion if gateway packet is lost
-            async def _completion_watcher():
+            async def _completion_watcher() -> None:
                 try:
                     await asyncio.sleep(clamped_sec + 2)
                     await self.on_pump_completed(zone_key, reason="done")

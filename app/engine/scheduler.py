@@ -30,11 +30,11 @@ logger = logging.getLogger("smart_water.scheduler")
 class SystemScheduler:
     """Coordinates background loops and telemetry events."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._running = False
-        self._poll_task: Optional[asyncio.Task] = None
-        self._rules_task: Optional[asyncio.Task] = None
-        self._purge_task: Optional[asyncio.Task] = None
+        self._poll_task: Optional[asyncio.Task[None]] = None
+        self._rules_task: Optional[asyncio.Task[None]] = None
+        self._purge_task: Optional[asyncio.Task[None]] = None
         self._db_downsample_counter = 0
 
     async def start(self) -> None:
@@ -244,7 +244,7 @@ class SystemScheduler:
         g = state["garden"]
         z = g["zones"]
 
-        def _insert():
+        def _insert() -> None:
             with state_manager._get_connection() as conn:
                 conn.execute(
                     """

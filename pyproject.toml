@@ -1,0 +1,27 @@
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "gpiod",
+    "gpiod.*",
+    "serial",
+    "serial.*",
+    "watchdog",
+    "watchdog.*",
+    "yaml",
+    "yaml.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "app.hardware.*",
+    "app.alerts.*",
+    "app.api.*",
+]
+ignore_errors = true

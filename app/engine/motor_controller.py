@@ -24,7 +24,7 @@ class MotorController:
     Controls the 25A AC contactor relay for overhead tank pumping.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._started_at_iso: Optional[str] = None
         self._started_at_mono: Optional[float] = None
         self._lock = asyncio.Lock()

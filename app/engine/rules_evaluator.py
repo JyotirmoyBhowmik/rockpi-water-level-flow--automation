@@ -32,7 +32,7 @@ class RuleCondition(BaseModel):
     value: Union[float, int, str, bool, List[Any]] = Field(...)
 
     @model_validator(mode="after")
-    def validate_time_clock(self):
+    def validate_time_clock(self) -> "RuleCondition":
         if self.source == "time.clock" and self.operator not in ("==", "!="):
             raise ValueError(
                 "time.clock only supports == and != operators. Use time.minutes for range or window comparison."
@@ -85,13 +85,13 @@ class UserRuleTemplate(BaseModel):
 class RulesEvaluator:
     """Evaluates user automations against live system state."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._rules_cache: Dict[str, RuleDefinition] = {}
         self._last_rule_execution: Dict[str, float] = {}
 
     async def load_rules_from_db(self) -> None:
         """Loads user rules from SQLite."""
-        def _fetch():
+        def _fetch() -> List[Any]:
             with state_manager._get_connection() as conn:
                 cur = conn.execute("SELECT id, name, enabled, rule_json FROM user_rules;")
                 return cur.fetchall()
@@ -120,7 +120,7 @@ class RulesEvaluator:
         rule.updated_at = datetime.now(timezone.utc).isoformat()
         rule_json = rule.model_dump_json()
 
-        def _upsert():
+        def _upsert() -> None:
             with state_manager._get_connection() as conn:
                 conn.execute(
                     """
@@ -144,7 +144,7 @@ class RulesEvaluator:
         if rule_id not in self._rules_cache:
             return False
 
-        def _delete():
+        def _delete() -> None:
             with state_manager._get_connection() as conn:
                 conn.execute("DELETE FROM user_rules WHERE id = ?;", (rule_id,))
                 conn.commit()
@@ -174,7 +174,7 @@ class RulesEvaluator:
         )
         tpl_json = tpl.model_dump_json()
 
-        def _insert():
+        def _insert() -> None:
             with state_manager._get_connection() as conn:
                 conn.execute(
                     """
@@ -191,7 +191,7 @@ class RulesEvaluator:
 
     async def get_user_templates(self) -> List[UserRuleTemplate]:
         """Returns all user-saved templates from the database."""
-        def _fetch():
+        def _fetch() -> List[Any]:
             with state_manager._get_connection() as conn:
                 cur = conn.execute("SELECT template_json FROM user_rule_templates ORDER BY created_at DESC;")
                 return cur.fetchall()
@@ -206,7 +206,7 @@ class RulesEvaluator:
         return templates
 
     async def delete_user_template(self, template_id: str) -> bool:
-        def _delete():
+        def _delete() -> bool:
             with state_manager._get_connection() as conn:
                 cur = conn.execute("DELETE FROM user_rule_templates WHERE id = ?;", (template_id,))
                 conn.commit()
@@ -438,7 +438,7 @@ class RulesEvaluator:
                 parsed = urllib.parse.urlparse(act.url)
                 orig_host = parsed.hostname or ""
 
-                async def _post(target_url: str, ip_pin: str, host_header: str):
+                async def _post(target_url: str, ip_pin: str, host_header: str) -> None:
                     try:
                         transport = PinnedIPTransport(pinned_ip=ip_pin, original_host=host_header)
                         async with httpx.AsyncClient(transport=transport, timeout=4.0) as client:

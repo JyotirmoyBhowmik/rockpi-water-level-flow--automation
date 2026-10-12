@@ -77,7 +77,7 @@ class HeadEndConfig(BaseModel):
 
     @field_validator("relay_idle_bias_confirmed")
     @classmethod
-    def validate_polarity_safety(cls, v: Optional[str], info) -> Optional[str]:
+    def validate_polarity_safety(cls, v: Optional[str], info: Any) -> Optional[str]:
         # Polarity safety enforced in check method
         return v
 

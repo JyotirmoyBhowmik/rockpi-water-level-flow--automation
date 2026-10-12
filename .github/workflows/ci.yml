@@ -7,62 +7,168 @@ on:
     branches: [ main, master ]
 
 jobs:
-  test:
+  # (a) Linting and Strict Static Type Checking
+  lint-and-typecheck:
+    name: Ruff & Mypy Strict Typecheck
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: 'pip'
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-dev.txt
-        pip install ruff platformio
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install ruff
 
-    - name: Run Ruff Lint Checks
-      run: |
-        ruff check .
+      - name: Run Ruff Lint Checks
+        run: |
+          ruff check .
 
-    - name: Verify Config Documentation Sync
-      run: |
-        python tools/gen_config_docs.py --check
+      - name: Run Strict Mypy Typecheck (app/core & app/engine)
+        run: |
+          python -m mypy --strict app/core app/engine
 
-    - name: Run ShellCheck on installation scripts
-      run: |
-        shellcheck install.sh uninstall.sh
+      - name: Verify Config Documentation Sync
+        run: |
+          python tools/gen_config_docs.py --check
 
-    - name: Verify systemd service configuration
-      run: |
-        if command -v systemd-analyze >/dev/null 2>&1; then
-          systemd-analyze verify systemd/smart-water.service
-        else
-          echo "systemd-analyze not available, skipping"
-        fi
+  # (b) Unit, Integration & Hypothesis Property Tests with Coverage >= 85%
+  pytest-coverage:
+    name: Pytest & Coverage (>= 85%)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Run Python safety & protocol regression tests with coverage
-      run: |
-        pytest -v --cov=app --cov-report=term-missing
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
 
-    - name: Prepare test secrets for PlatformIO firmware builds
-      run: |
-        echo '#pragma once' > firmware/gateway/include/secrets.h
-        echo '#define ESPNOW_PMK "0123456789abcdef0123456789abcdef"' >> firmware/gateway/include/secrets.h
-        echo '#define ESPNOW_LMK "0123456789abcdef0123456789abcdef"' >> firmware/gateway/include/secrets.h
-        echo '#define ESPNOW_SHARED_KEY "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"' >> firmware/gateway/include/secrets.h
-        cp firmware/gateway/include/secrets.h firmware/node/include/secrets.h
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
-    - name: Build Gateway Firmware with PlatformIO
-      run: |
-        pio run -d firmware/gateway
+      - name: Compile C++ Host Signer
+        run: |
+          g++ -O2 -Wall tests/host_cpp_signer.cpp -o tests/host_cpp_signer
+          chmod +x tests/host_cpp_signer
 
-    - name: Build Node Firmware with PlatformIO
-      run: |
-        pio run -d firmware/node
+      - name: Run Pytest with Coverage Gate (>= 85% on app/engine & app/core)
+        run: |
+          pytest -v --cov=app/engine --cov=app/core --cov-report=term-missing --cov-fail-under=85
+
+  # (c) C++ Host Signer Build & Protocol Contract Tests
+  protocol-contract:
+    name: C++ Host Signer & Protocol Contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Build C++ Host Signer with g++
+        run: |
+          g++ -O2 -Wall tests/host_cpp_signer.cpp -o tests/host_cpp_signer
+          chmod +x tests/host_cpp_signer
+
+      - name: Run Protocol v1.1 Contract Verification Tests
+        run: |
+          pytest -v tests/test_protocol_contract.py tests/test_hypothesis_properties.py
+
+  # (d) PlatformIO ESP32-C3 Firmware Builds
+  firmware:
+    name: PlatformIO Firmware Build (Gateway & Node)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('firmware/**/platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Generate Dummy CI Secrets
+        run: |
+          cat << 'EOF' > firmware/gateway/include/secrets.h
+          #pragma once
+          #define ESPNOW_PMK "0123456789abcdef0123456789abcdef"
+          #define ESPNOW_LMK "0123456789abcdef0123456789abcdef"
+          #define ESPNOW_SHARED_KEY "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          EOF
+          cp firmware/gateway/include/secrets.h firmware/node/include/secrets.h
+
+      - name: Build Gateway Firmware
+        run: |
+          pio run -d firmware/gateway
+
+      - name: Build Node Firmware
+        run: |
+          pio run -d firmware/node
+
+  # (e) ShellCheck Linting
+  shellcheck:
+    name: ShellCheck Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck on installation and uninstallation scripts
+        run: |
+          shellcheck install.sh uninstall.sh
+
+  # (f) Systemd Service Verification
+  systemd-verify:
+    name: Systemd Service Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify systemd service configuration
+        run: |
+          if command -v systemd-analyze >/dev/null 2>&1; then
+            systemd-analyze verify systemd/smart-water.service
+          else
+            echo "systemd-analyze not available in environment, skipping"
+          fi
