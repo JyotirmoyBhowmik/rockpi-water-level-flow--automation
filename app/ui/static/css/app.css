@@ -1,3 +1,8 @@
+/* ==============================================================================
+ * Radxa Smart Water Industrial UI - Mobile-First & Dark Mode Styles
+ * ============================================================================== */
+
+/* Pulse dot animation */
 .pulse-dot {
   display: inline-block;
   width: 8px;
@@ -28,4 +33,194 @@
 
 .wizard-step.active {
   display: block;
+}
+
+/* ==============================================================================
+ * ALWAYS-VISIBLE STICKY EMERGENCY STOP (E-STOP) BAR
+ * Mobile-first high-contrast physical override button
+ * ============================================================================== */
+.sticky-estop-bar {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  background: #7f1d1d;
+  background: linear-gradient(180deg, #991b1b 0%, #7f1d1d 100%);
+  border-bottom: 2px solid #ef4444;
+  padding: 0.6rem 1rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s ease;
+}
+
+.container-estop {
+  max-width: 1440px;
+  margin: 0 auto;
+}
+
+.estop-title {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: #fee2e2;
+  text-transform: uppercase;
+}
+
+.estop-sub {
+  font-size: 0.8rem;
+  color: #fca5a5;
+  font-weight: 600;
+}
+
+.btn-estop-large {
+  background: #dc2626 !important;
+  color: #ffffff !important;
+  font-size: 1rem !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.04em !important;
+  padding: 0.65rem 1.75rem !important;
+  border-radius: 9999px !important;
+  border: 2px solid #fecaca !important;
+  box-shadow: 0 0 15px rgba(239, 68, 68, 0.5) !important;
+  cursor: pointer !important;
+  min-height: 44px;
+  transition: transform 0.1s ease, box-shadow 0.2s ease !important;
+}
+
+.btn-estop-large:hover {
+  background: #b91c1c !important;
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.8) !important;
+}
+
+.btn-estop-large:active {
+  transform: scale(0.96);
+}
+
+/* ==============================================================================
+ * MOBILE-FIRST CARD & TOUCH LAYOUT
+ * ============================================================================== */
+@media (max-width: 640px) {
+  .container {
+    padding: 0.75rem;
+  }
+  .card {
+    padding: 1rem;
+    border-radius: 0.5rem;
+  }
+  .nav-tabs {
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 0.25rem;
+  }
+  .nav-tab-btn {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8rem;
+  }
+  .btn-estop-large {
+    padding: 0.5rem 1rem !important;
+    font-size: 0.9rem !important;
+  }
+  .estop-title {
+    font-size: 0.7rem;
+  }
+}
+
+/* Touch action target sizing (min 44px for accessibility) */
+.btn {
+  min-height: 38px;
+  touch-action: manipulation;
+}
+
+/* ==============================================================================
+ * DARK MODE PALETTE & OVERRIDES
+ * High contrast industrial OLED theme
+ * ============================================================================== */
+body.dark-mode {
+  --bg-main: #0b1120;
+  --bg-card: #1e293b;
+  --border-subtle: #334155;
+  --border-focus: #64748b;
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  background-color: var(--bg-main);
+  color: var(--text-primary);
+}
+
+body.dark-mode header {
+  background: #0f172a !important;
+  border-bottom-color: #334155 !important;
+}
+
+body.dark-mode header h1 {
+  color: #f8fafc !important;
+}
+
+body.dark-mode .card {
+  background: var(--bg-card) !important;
+  border-color: var(--border-subtle) !important;
+}
+
+body.dark-mode .card-header {
+  border-bottom-color: #334155 !important;
+}
+
+body.dark-mode .card-header span:first-child {
+  color: #cbd5e1 !important;
+}
+
+body.dark-mode .nav-tabs {
+  border-bottom-color: #334155 !important;
+}
+
+body.dark-mode .nav-tab-btn {
+  color: #94a3b8 !important;
+}
+
+body.dark-mode .nav-tab-btn:hover {
+  color: #f8fafc !important;
+}
+
+body.dark-mode .nav-tab-btn.active {
+  color: #38bdf8 !important;
+  border-bottom-color: #38bdf8 !important;
+}
+
+body.dark-mode input,
+body.dark-mode select,
+body.dark-mode textarea {
+  background-color: #0f172a !important;
+  color: #f8fafc !important;
+  border-color: #334155 !important;
+}
+
+body.dark-mode .btn-secondary {
+  background: #334155 !important;
+  color: #f8fafc !important;
+  border-color: #475569 !important;
+}
+
+body.dark-mode .btn-secondary:hover {
+  background: #475569 !important;
+}
+
+body.dark-mode .badge-gray {
+  background: #1e293b !important;
+  color: #cbd5e1 !important;
+  border-color: #334155 !important;
+}
+
+body.dark-mode table thead th {
+  background-color: #1e293b !important;
+  color: #cbd5e1 !important;
+  border-bottom-color: #334155 !important;
+}
+
+body.dark-mode table tbody td {
+  border-bottom-color: #1e293b !important;
+  color: #f8fafc !important;
+}
+
+body.dark-mode table tbody tr:hover {
+  background-color: #0f172a !important;
 }

@@ -4,10 +4,31 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Radxa Smart Water & Precision Irrigation Controller</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0284c7">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="/static/icons/icon.svg">
   <link rel="stylesheet" href="/static/css/vendor.min.css">
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
+  <!-- Always-Visible Sticky Large E-STOP Bar (Mobile & Desktop) -->
+  <div id="sticky-estop-bar" class="sticky-estop-bar">
+    <div class="flex items-center justify-between gap-3 container-estop">
+      <div class="flex items-center gap-2">
+        <span style="font-size: 1.25rem;">🛑</span>
+        <div>
+          <span class="estop-title">SAFETY INTERLOCK GUARDIAN</span>
+          <span class="estop-sub" id="estop-motor-status">Motor: Standby</span>
+        </div>
+      </div>
+      <button class="btn btn-estop-large" data-action="emergency-stop" id="btn-sticky-estop" title="Emergency Stop: Kill AC pump and all irrigation valves immediately">
+        🛑 EMERGENCY STOP
+      </button>
+    </div>
+  </div>
+
   <!-- Header Bar -->
   <header style="background: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 0.85rem 1.25rem;">
     <div class="flex items-center justify-between flex-wrap gap-3">
@@ -39,8 +60,11 @@
         <div class="badge badge-gray" id="badge-uptime">
           Uptime: 0s
         </div>
-        <button class="btn btn-danger btn-sm" data-action="emergency-stop" style="font-weight: 700;">
-          🛑 EMERGENCY STOP
+        <div class="badge badge-blue" id="badge-user-role">
+          Role: Operator
+        </div>
+        <button class="btn btn-secondary btn-sm" id="btn-toggle-theme" data-action="toggle-theme" title="Toggle Dark/Light Mode">
+          🌙 Dark Mode
         </button>
       </div>
     </div>

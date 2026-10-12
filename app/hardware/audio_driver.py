@@ -64,7 +64,16 @@ class VoiceAlertSynthesizer:
         Enqueues voice alert.
         Priority: 0 = Emergency (bypasses quiet hours), 1 = Warning, 2 = Info.
         """
-        if not text or not system_config.audio.enabled:
+        if not text:
+            return
+
+        if not system_config.audio.enabled:
+            if priority <= 1:
+                try:
+                    from app.hardware.buzzer import buzzer_controller
+                    await buzzer_controller.alarm_beep(alarm_key=text, message=text)
+                except Exception as b_err:
+                    logger.debug("Buzzer fallback error: %s", b_err)
             return
 
         now = time.time()
@@ -140,6 +149,20 @@ class VoiceAlertSynthesizer:
                         await asyncio.gather(espeak_proc.wait(), aplay_proc.wait())
                     except Exception as e:
                         logger.error("Error invoking ALSA speech pipeline: %s", e)
+                        if item.get("priority", 1) <= 1:
+                            try:
+                                from app.hardware.buzzer import buzzer_controller
+                                await buzzer_controller.alarm_beep(alarm_key=text, message=text)
+                            except Exception:
+                                pass
+                else:
+                    # Audio hardware absent: fallback to buzzer for critical alerts
+                    if item.get("priority", 1) <= 1:
+                        try:
+                            from app.hardware.buzzer import buzzer_controller
+                            await buzzer_controller.alarm_beep(alarm_key=text, message=text)
+                        except Exception as b_err:
+                            logger.debug("Buzzer fallback error: %s", b_err)
 
                 self._queue.task_done()
             except asyncio.CancelledError:

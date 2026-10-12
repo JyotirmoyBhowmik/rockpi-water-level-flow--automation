@@ -43,6 +43,7 @@ The Radxa ROCK Pi S exposes 26-pin Header 1 and 26-pin Header 2 (0.1" pitch). Al
 | **IN2 (Interlock Out)**| Pin 9 | GPIO1_B3 (Line 43) | Configurable (Active LOW default) | PC817 Opto Channel 2 (End of Float Safety Chain) |
 | **IN3 (Interlock Mid)**| Pin 11 | GPIO1_B4 (Line 44) | Configurable (Active LOW default) | PC817 Opto Channel 3 (Mid-Point Tap between Floats) |
 | **IN4 (Leak Sensor)** | Pin 12 | GPIO1_B5 (Line 45) | Configurable (Active LOW default) | PC817 Opto Channel 4 (Manifold Conductive Leak Sensor) |
+| **Buzzer Out** | Pin 13 | GPIO1_B6 (Line 46) | Active HIGH (default) | Optional Piezo Buzzer (Acoustic Alarm Backup) |
 | **Pilot Relay Out** | Pin 15 | GPIO1_C0 (Line 48) | Active HIGH (unless pull-up confirmed) | Pilot Relay IN (Switches 230V/12V Contactor Coil) |
 | **Contactor Aux In** | Pin 16 | GPIO1_C1 (Line 49) | Configurable (Active LOW default) | Contactor NO Auxiliary Contact (via PC817) |
 

@@ -33,8 +33,10 @@ from app.core.watchdog import watchdog_manager
 from app.engine.rules_evaluator import rules_evaluator
 from app.engine.scheduler import scheduler
 from app.hardware.audio_driver import audio_controller
+from app.hardware.buzzer import buzzer_controller
 from app.hardware.gateway_driver import garden_gateway
 from app.hardware.gpio_driver import head_end_gpio
+from app.hardware.oled_display import oled_display
 
 
 # -----------------------------------------------------------------------------
@@ -101,6 +103,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await level_sensor.init()
     except Exception as exc:
         logger.warning("Level sensor initialization error: %s", exc)
+    try:
+        await buzzer_controller.setup()
+    except Exception as exc:
+        logger.warning("Buzzer initialization error: %s", exc)
+    try:
+        await oled_display.start()
+    except Exception as exc:
+        logger.warning("OLED display initialization error: %s", exc)
 
     # 5. Load user rules and start scheduler
     await rules_evaluator.load_rules_from_db()
@@ -140,6 +150,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error("Error killing outputs during shutdown: %s", e)
 
+    await oled_display.stop()
+    await buzzer_controller.stop()
     await scheduler.stop()
     await head_end_gpio.cleanup()
     await garden_gateway.stop()
@@ -217,6 +229,9 @@ def create_app() -> FastAPI:
             "/static",
             "/healthz",
             "/favicon.ico",
+            "/manifest.webmanifest",
+            "/manifest.json",
+            "/sw.js",
         )
         is_public = (
             request.url.path == "/"
@@ -231,7 +246,8 @@ def create_app() -> FastAPI:
             if auth_header and auth_header.startswith("Bearer "):
                 token = auth_header[7:].strip()
 
-            if not security_manager.verify_token(token):
+            token_record = security_manager.authenticate(token)
+            if not token_record:
                 # Record failed authentication attempt (Part 3.1)
                 attempts = failed_auth_history.setdefault(client_ip, [])
                 failed_auth_history[client_ip] = [ts for ts in attempts if now - ts < 60.0]
@@ -251,6 +267,39 @@ def create_app() -> FastAPI:
                     },
                     headers={"WWW-Authenticate": "Bearer"},
                 )
+
+            request.state.token_record = token_record
+
+            # RBAC Role Gate: Viewer role is strictly read-only (GET/HEAD only)
+            if request.method in ("POST", "PUT", "DELETE"):
+                if token_record.role == "viewer":
+                    return JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "status_code": 403,
+                            "error_code": "FORBIDDEN_ROLE",
+                            "correlation_id": correlation_id,
+                            "message": f"Viewer token '{token_record.name}' is read-only. Control actions require operator privileges.",
+                        },
+                    )
+
+                # Audit Log of who did what (token name) in events table
+                try:
+                    await state_manager.log_event(
+                        "AUDIT_CONTROL",
+                        "INFO",
+                        f"Operator '{token_record.name}' executed {request.method} {request.url.path}",
+                        {
+                            "operator": token_record.name,
+                            "role": token_record.role,
+                            "method": request.method,
+                            "path": request.url.path,
+                            "client_ip": client_ip,
+                        },
+                    )
+                except Exception as audit_err:
+                    logger.warning("Could not record audit log: %s", audit_err)
 
             # Rate Limiting on control endpoints
             if request.method in ("POST", "PUT", "DELETE"):
@@ -317,6 +366,21 @@ def create_app() -> FastAPI:
     async def serve_dashboard():
         index_file = templates_dir / "index.html"
         return FileResponse(str(index_file))
+
+    @app.get("/manifest.webmanifest")
+    @app.get("/manifest.json")
+    async def serve_manifest():
+        manifest_file = static_dir / "manifest.webmanifest"
+        return FileResponse(str(manifest_file), media_type="application/manifest+json")
+
+    @app.get("/sw.js")
+    async def serve_service_worker():
+        sw_file = static_dir / "sw.js"
+        return FileResponse(
+            str(sw_file),
+            media_type="application/javascript",
+            headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     @app.get("/healthz")
     async def health_check():

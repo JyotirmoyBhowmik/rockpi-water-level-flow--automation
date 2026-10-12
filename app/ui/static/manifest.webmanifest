@@ -1,0 +1,19 @@
+{
+  "name": "Smart Water Controller",
+  "short_name": "SmartWater",
+  "description": "Radxa ROCK Pi S Smart Water & Precision Irrigation Controller",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0f172a",
+  "theme_color": "#0284c7",
+  "icons": [
+    {
+      "src": "/static/icons/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

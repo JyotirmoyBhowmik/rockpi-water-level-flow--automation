@@ -53,9 +53,10 @@ The system reliably orchestrates:
 |  [Armbian Debian 12 Minimal]                                                      |
 |   ├── Linux Kernel Watchdog (/dev/watchdog pinged every 5s)                       |
 |   ├── Dedicated Service User 'smartwater' (MemoryMax=200M, MemoryHigh=128M)       |
-|   ├── DS3231 Precision I2C RTC (/dev/i2c-7 at 0x68)                              |
+|   ├── DS3231 Precision I2C RTC & Optional SSD1306 OLED (/dev/i2c-7)               |
 |   ├── CM108 USB Audio DAC Adapter (ALSA voice alerts via espeak-ng)               |
-|   └── Single Async Python 3.11 Runtime (FastAPI + SQLite WAL + Alpine.js UI)      |
+|   ├── Hardware Piezo Buzzer (acoustic backup when voice audio is unavailable)     |
+|   └── Single Async Python 3.11 Runtime (FastAPI + SQLite WAL + PWA + Alpine.js UI)|
 |                                                                                   |
 |  [Hardware Protection Layer]                                                      |
 |   ├── 4-Channel PC817 Optocoupler Isolation (3.3V Logic Safe)                     |

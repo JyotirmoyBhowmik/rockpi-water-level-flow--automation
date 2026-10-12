@@ -418,6 +418,23 @@ def main() -> None:
     update_parser.add_argument("--slots-dir", dest="slots_dir", default=None, help="Slots directory parent path")
     update_parser.add_argument("--skip-health-check", action="store_true", help="Skip post-update HTTP health check")
 
+    # token management
+    token_parser = subparsers.add_parser("token", help="Issue, revoke, and list named API tokens")
+    token_sub = token_parser.add_subparsers(dest="token_action", help="Token actions")
+
+    # token issue
+    issue_parser = token_sub.add_parser("issue", help="Issue a new named API Bearer token")
+    issue_parser.add_argument("--name", required=True, help="Descriptive name for the token (e.g. tablet-wall, monitoring)")
+    issue_parser.add_argument("--role", choices=["operator", "viewer"], default="operator", help="Access role: operator (control) or viewer (read-only)")
+    issue_parser.add_argument("--days", type=int, default=None, help="Token validity window in days (default: permanent)")
+
+    # token revoke
+    revoke_parser = token_sub.add_parser("revoke", help="Revoke an existing token by name")
+    revoke_parser.add_argument("--name", required=True, help="Name of token to revoke")
+
+    # token list
+    token_sub.add_parser("list", help="List all issued tokens and their status")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -432,6 +449,54 @@ def main() -> None:
         print(f" New Token: {new_token}")
         print(" Update your API clients with this new Bearer token.")
         print("=" * 60 + "\n")
+    elif cmd == "token":
+        action = getattr(args, "token_action", None)
+        if action == "issue":
+            try:
+                raw_token, rec = security_manager.issue_token(name=args.name, role=args.role, days=args.days)
+                print("\n" + "=" * 68)
+                print(f" TOKEN ISSUED SUCCESSFULLY: [{rec.name.upper()}]")
+                print("=" * 68)
+                print(f" Token Name: {rec.name}")
+                print(f" Role:       {rec.role.upper()} ({'Full Control' if rec.role == 'operator' else 'Read-Only'})")
+                print(f" Created:    {rec.created_at}")
+                print(f" Expires:    {rec.expires_at if rec.expires_at else 'Never'}")
+                print("-" * 68)
+                print(f" Secret Bearer Token: {raw_token}")
+                print("-" * 68)
+                print(" IMPORTANT: Save this secret token now. It is hashed with SHA-256")
+                print(" and will NEVER be displayed again.")
+                print("=" * 68 + "\n")
+                sys.exit(0)
+            except Exception as e:
+                print(f"Error issuing token: {e}")
+                sys.exit(1)
+        elif action == "revoke":
+            success = security_manager.revoke_token(args.name)
+            if success:
+                print(f"Token '{args.name}' has been successfully revoked.")
+                sys.exit(0)
+            else:
+                print(f"Error: Token '{args.name}' not found.")
+                sys.exit(1)
+        elif action == "list":
+            tokens = security_manager.list_tokens()
+            print("\n" + "=" * 80)
+            print(" REGISTERED API AUTHENTICATION TOKENS")
+            print("=" * 80)
+            print(f"{'NAME':<22} {'ROLE':<10} {'STATUS':<10} {'EXPIRES':<25} {'CREATED':<20}")
+            print("-" * 80)
+            if not tokens:
+                print(" (No tokens registered)")
+            for t in tokens:
+                status_str = "REVOKED" if t.revoked else ("EXPIRED" if not t.is_valid() else "ACTIVE")
+                exp_str = t.expires_at if t.expires_at else "Never"
+                print(f"{t.name:<22} {t.role:<10} {status_str:<10} {exp_str:<25} {t.created_at[:19]:<20}")
+            print("=" * 80 + "\n")
+            sys.exit(0)
+        else:
+            token_parser.print_help()
+            sys.exit(1)
     elif cmd == "restore":
         success = restore_backup(args.backup_file)
         sys.exit(0 if success else 1)

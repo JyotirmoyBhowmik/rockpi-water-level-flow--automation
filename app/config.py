@@ -292,6 +292,31 @@ class AudioConfig(BaseModel):
     quiet_hours_end: Optional[int] = Field(default=None, ge=0, le=23)
 
 
+class BuzzerConfig(BaseModel):
+    """
+    Configuration for optional piezo buzzer connected to SBC GPIO.
+    Provides audible alerts for critical alarms when voice audio is unavailable or silent.
+    """
+    enabled: bool = Field(default=False, description="Enable hardware piezo buzzer on SBC GPIO")
+    gpio_pin: Optional[int] = Field(default=None, description="GPIO line offset for piezo buzzer driver")
+    active_high: bool = Field(default=True, description="True if HIGH energizes the buzzer")
+    beep_on_alarm: bool = Field(default=True, description="Sound audible alert on critical alarms when voice audio is unavailable")
+
+
+class DisplayConfig(BaseModel):
+    """
+    Configuration for local SSD1306 OLED status display over I2C.
+    Displays tank levels, pump status, wireless garden link, and active alarms.
+    """
+    enabled: bool = Field(default=False, description="Enable local I2C SSD1306 OLED status display")
+    i2c_bus: int = Field(default=7, ge=0, le=10, description="I2C bus number on ROCK Pi S (default 7 on Header 1)")
+    i2c_address: int = Field(default=0x3C, ge=0, le=0x7F, description="I2C address for SSD1306 (default 0x3C)")
+    width: int = Field(default=128, ge=64, le=256, description="Display width in pixels (typically 128)")
+    height: int = Field(default=64, ge=16, le=128, description="Display height in pixels (64 or 32)")
+    refresh_interval_s: float = Field(default=2.0, ge=0.5, le=30.0, description="Interval in seconds for display refresh")
+    rotate: int = Field(default=0, ge=0, le=270, description="Display rotation: 0, 90, 180, or 270 degrees")
+
+
 class TelegramConfig(BaseModel):
     enabled: bool = Field(default=False, description="Enable Telegram bot notifications")
     bot_token: Optional[str] = Field(default=None, description="Telegram bot API token")
@@ -367,6 +392,8 @@ class SystemConfig(BaseModel):
         f"zone_{i}": ZoneConfig(name=f"Zone {i}", has_flow_meter=(i == 1)) for i in range(1, 5)
     })
     audio: AudioConfig = Field(default_factory=AudioConfig)
+    buzzer: BuzzerConfig = Field(default_factory=BuzzerConfig)
+    display: DisplayConfig = Field(default_factory=DisplayConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     ntfy: NtfyConfig = Field(default_factory=NtfyConfig)
     mqtt: MQTTConfig = Field(default_factory=MQTTConfig)

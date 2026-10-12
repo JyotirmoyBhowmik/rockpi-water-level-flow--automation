@@ -260,6 +260,8 @@ async def emergency_stop_all() -> Dict[str, Any]:
     await plant_controller.stop_all_zones(reason="emergency_stop")
     await state_manager.log_event("EMERGENCY_STOP", "CRITICAL", "Operator activated Emergency Stop.")
     await audio_controller.speak("Emergency stop activated. All outputs killed.", priority=0)
+    from app.hardware.buzzer import buzzer_controller
+    await buzzer_controller.trigger_alarm_if_audio_unavailable("emergency_stop", "Operator activated Emergency Stop.", priority=0)
     return {"status": "success", "message": "Emergency stop executed. All outputs de-energized."}
 
 

@@ -16,21 +16,51 @@ import secrets
 import socket
 import time
 import urllib.parse
-from datetime import datetime, timezone
-from typing import List, Optional, Tuple, Union
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 import httpx
 from app.config import system_config
 
 logger = logging.getLogger("smart_water.security")
 
+TokenRole = Literal["operator", "viewer"]
+
+
+@dataclass
+class TokenRecord:
+    """Record storing hashed token metadata, role, and expiration."""
+    name: str
+    role: TokenRole
+    token_hash: str
+    created_at: str
+    expires_at: Optional[str] = None
+    revoked: bool = False
+
+    def is_valid(self) -> bool:
+        """Checks whether token is active and unexpired."""
+        if self.revoked:
+            return False
+        if self.expires_at:
+            try:
+                exp_dt = datetime.fromisoformat(self.expires_at)
+                if exp_dt.tzinfo is None:
+                    exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) >= exp_dt:
+                    return False
+            except Exception:
+                return False
+        return True
+
 
 class SecurityManager:
-    """Manages API token hashing, verification, rotation, and short-lived SSE tickets."""
+    """Manages API token hashing, verification, RBAC roles, and short-lived SSE tickets."""
 
     def __init__(self, auth_file_path: Optional[str] = None):
         self.auth_file_path = Path(auth_file_path or system_config.security.auth_token_file)
         self._sse_tickets: dict[str, float] = {}
         self._cached_token_hash: Optional[str] = None
+        self._cached_tokens: Dict[str, TokenRecord] = {}
         self._cached_mtime: Optional[float] = None
 
     def create_sse_ticket(self, ttl_seconds: int = 60) -> str:
@@ -56,44 +86,108 @@ class SecurityManager:
         """Computes SHA-256 hash of a raw token."""
         return hashlib.sha256(raw_token.strip().encode("utf-8")).hexdigest()
 
-    def _get_stored_token_hash(self) -> Optional[str]:
-        """Loads and caches the token hash in memory; reloads when auth.json mtime changes."""
+    def _load_stored_auth(self) -> None:
+        """Loads and caches tokens and hashes in memory; reloads when auth.json mtime changes."""
         if not self.auth_file_path.exists():
             self._cached_token_hash = None
+            self._cached_tokens = {}
             self._cached_mtime = None
-            return None
+            return
 
         try:
             current_mtime = self.auth_file_path.stat().st_mtime
-            if self._cached_token_hash is not None and self._cached_mtime == current_mtime:
-                return self._cached_token_hash
+            if self._cached_mtime == current_mtime:
+                return
 
             with open(self.auth_file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                token_hash = data.get("token_hash")
-                if token_hash:
-                    self._cached_token_hash = str(token_hash)
-                    self._cached_mtime = current_mtime
-                    return self._cached_token_hash
+
+            self._cached_token_hash = data.get("token_hash")
+            self._cached_tokens = {}
+
+            # Parse named tokens
+            raw_tokens = data.get("tokens", {})
+            for t_name, t_data in raw_tokens.items():
+                self._cached_tokens[t_name] = TokenRecord(
+                    name=t_data.get("name", t_name),
+                    role=t_data.get("role", "operator"),
+                    token_hash=t_data.get("token_hash", ""),
+                    created_at=t_data.get("created_at", ""),
+                    expires_at=t_data.get("expires_at"),
+                    revoked=bool(t_data.get("revoked", False)),
+                )
+
+            # If legacy token_hash exists and not in tokens dict, synthesize legacy operator token
+            if self._cached_token_hash and "default_admin" not in self._cached_tokens:
+                self._cached_tokens["default_admin"] = TokenRecord(
+                    name="default_admin",
+                    role="operator",
+                    token_hash=self._cached_token_hash,
+                    created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+                    expires_at=None,
+                    revoked=False,
+                )
+
+            self._cached_mtime = current_mtime
         except Exception as e:
             logger.error("Error reading auth file %s: %s", self.auth_file_path, e)
 
-        return self._cached_token_hash
+    def _get_stored_token_hash(self) -> Optional[str]:
+        """Backward-compatible helper returning legacy token hash or default admin hash."""
+        self._load_stored_auth()
+        if self._cached_token_hash:
+            return self._cached_token_hash
+        for t in self._cached_tokens.values():
+            if t.role == "operator" and t.is_valid():
+                return t.token_hash
+        return None
+
+    def _save_auth_file(self, data: Dict[str, Any]) -> None:
+        """Atomically saves auth payload to disk (mode 0600)."""
+        self.auth_file_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.auth_file_path.with_suffix(".tmp")
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        temp_path.replace(self.auth_file_path)
+        try:
+            os.chmod(self.auth_file_path, 0o600)
+        except OSError:
+            pass
+        self._cached_mtime = self.auth_file_path.stat().st_mtime
 
     def get_or_create_token(self) -> Tuple[Optional[str], str]:
         """
-        Loads the stored token hash. If none exists, generates a new token,
+        Loads the stored token hash. If none exists, generates a new default operator token,
         persists its hash, and returns (raw_token, token_hash).
-        If already exists, returns (None, token_hash).
         """
-        cached = self._get_stored_token_hash()
-        if cached:
-            return None, cached
+        self._load_stored_auth()
+        if self._cached_tokens or self._cached_token_hash:
+            return None, (self._cached_token_hash or next(iter(self._cached_tokens.values())).token_hash)
 
         # Generate fresh secure random token
         raw_token = secrets.token_urlsafe(32)
         token_hash = self._hash_token(raw_token)
-        self._save_token_hash(token_hash)
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        record = TokenRecord(
+            name="default_admin",
+            role="operator",
+            token_hash=token_hash,
+            created_at=now_iso,
+            expires_at=None,
+            revoked=False,
+        )
+        self._cached_tokens = {"default_admin": record}
+        self._cached_token_hash = token_hash
+
+        payload: Dict[str, Any] = {
+            "token_hash": token_hash,
+            "created_at": now_iso,
+            "tokens": {
+                "default_admin": asdict(record),
+            },
+        }
+        self._save_auth_file(payload)
 
         print("\n" + "=" * 72)
         print(" [SECURITY NOTICE] A NEW SMART-WATER API BEARER TOKEN HAS BEEN GENERATED:")
@@ -104,44 +198,185 @@ class SecurityManager:
         return raw_token, token_hash
 
     def rotate_token(self) -> str:
-        """Rotates the API token, writes new hash to disk, and returns the new raw token."""
+        """Rotates the default operator token, writes new hash to disk, and returns the new raw token."""
         raw_token = secrets.token_urlsafe(32)
         token_hash = self._hash_token(raw_token)
-        self._save_token_hash(token_hash)
-        logger.warning("API Bearer token was rotated.")
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        self._load_stored_auth()
+        record = TokenRecord(
+            name="default_admin",
+            role="operator",
+            token_hash=token_hash,
+            created_at=now_iso,
+            expires_at=None,
+            revoked=False,
+        )
+        self._cached_tokens["default_admin"] = record
+        self._cached_token_hash = token_hash
+
+        # Read existing file to preserve other tokens
+        data: Dict[str, Any] = {}
+        if self.auth_file_path.exists():
+            try:
+                with open(self.auth_file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+
+        data["token_hash"] = token_hash
+        data["created_at"] = now_iso
+        tokens_dict = data.setdefault("tokens", {})
+        tokens_dict["default_admin"] = asdict(record)
+
+        self._save_auth_file(data)
+        logger.warning("Default API Bearer token was rotated.")
         return raw_token
 
     def _save_token_hash(self, token_hash: str) -> None:
-        """Atomically saves the token hash to disk and updates in-memory cache."""
-        self.auth_file_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.auth_file_path.with_suffix(".tmp")
-        payload = {
-            "token_hash": token_hash,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
-        temp_path.replace(self.auth_file_path)
-        try:
-            os.chmod(self.auth_file_path, 0o600)
-        except OSError:
-            pass
-
+        """Backward-compatible helper to save legacy token hash."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        record = TokenRecord(
+            name="default_admin",
+            role="operator",
+            token_hash=token_hash,
+            created_at=now_iso,
+            expires_at=None,
+            revoked=False,
+        )
+        self._cached_tokens = {"default_admin": record}
         self._cached_token_hash = token_hash
-        try:
-            self._cached_mtime = self.auth_file_path.stat().st_mtime
-        except OSError:
-            self._cached_mtime = None
+        payload: Dict[str, Any] = {
+            "token_hash": token_hash,
+            "created_at": now_iso,
+            "tokens": {"default_admin": asdict(record)},
+        }
+        self._save_auth_file(payload)
 
-    def verify_token(self, provided_token: Optional[str]) -> bool:
-        """Verifies provided Bearer token against stored hash in constant time."""
+    def issue_token(
+        self,
+        name: str,
+        role: TokenRole = "operator",
+        days: Optional[int] = None,
+    ) -> Tuple[str, TokenRecord]:
+        """
+        Issues a new named API Bearer token with specific role ('operator' or 'viewer')
+        and optional expiration.
+        """
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("Token name cannot be empty.")
+        if role not in ("operator", "viewer"):
+            raise ValueError(f"Invalid role '{role}'. Allowed roles: 'operator', 'viewer'.")
+
+        self._load_stored_auth()
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = self._hash_token(raw_token)
+        now_dt = datetime.now(timezone.utc)
+        expires_at = (now_dt + timedelta(days=days)).isoformat() if days else None
+
+        record = TokenRecord(
+            name=clean_name,
+            role=role,
+            token_hash=token_hash,
+            created_at=now_dt.isoformat(),
+            expires_at=expires_at,
+            revoked=False,
+        )
+
+        data: Dict[str, Any] = {}
+        if self.auth_file_path.exists():
+            try:
+                with open(self.auth_file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+
+        tokens_dict = data.setdefault("tokens", {})
+        tokens_dict[clean_name] = asdict(record)
+        self._save_auth_file(data)
+        self._cached_tokens[clean_name] = record
+
+        logger.info("Issued new API token '%s' (role: %s, expires: %s)", clean_name, role, expires_at)
+        return raw_token, record
+
+    def revoke_token(self, name: str) -> bool:
+        """Revokes an existing named token by setting revoked=True."""
+        clean_name = name.strip()
+        self._load_stored_auth()
+
+        data: Dict[str, Any] = {}
+        if not self.auth_file_path.exists():
+            return False
+        try:
+            with open(self.auth_file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return False
+
+        tokens_dict = data.get("tokens", {})
+        if clean_name not in tokens_dict:
+            return False
+
+        tokens_dict[clean_name]["revoked"] = True
+        self._save_auth_file(data)
+        if clean_name in self._cached_tokens:
+            self._cached_tokens[clean_name].revoked = True
+
+        logger.warning("Revoked API token '%s'", clean_name)
+        return True
+
+    def list_tokens(self) -> List[TokenRecord]:
+        """Returns all registered tokens."""
+        self._load_stored_auth()
+        return list(self._cached_tokens.values())
+
+    def authenticate(self, provided_token: Optional[str]) -> Optional[TokenRecord]:
+        """
+        Authenticates provided token against stored tokens in constant time.
+        Returns TokenRecord if valid and unexpired, else None.
+        """
         if not provided_token:
-            return False
-        expected_hash = self._get_stored_token_hash()
-        if not expected_hash:
-            return False
+            return None
+
+        self._load_stored_auth()
         provided_hash = self._hash_token(provided_token)
-        return hmac.compare_digest(provided_hash, expected_hash)
+
+        # Check in named tokens
+        matched_token: Optional[TokenRecord] = None
+        for record in self._cached_tokens.values():
+            if hmac.compare_digest(provided_hash, record.token_hash):
+                matched_token = record
+                break
+
+        # Check in legacy token_hash if no named match
+        if not matched_token and self._cached_token_hash:
+            if hmac.compare_digest(provided_hash, self._cached_token_hash):
+                matched_token = TokenRecord(
+                    name="default_admin",
+                    role="operator",
+                    token_hash=self._cached_token_hash,
+                    created_at="",
+                    expires_at=None,
+                    revoked=False,
+                )
+
+        if matched_token and matched_token.is_valid():
+            return matched_token
+
+        return None
+
+    def verify_token(self, provided_token: Optional[str], required_role: TokenRole = "viewer") -> bool:
+        """
+        Verifies provided Bearer token against stored hashes.
+        Enforces required role: if required_role is 'operator', viewer tokens are rejected.
+        """
+        token_record = self.authenticate(provided_token)
+        if not token_record:
+            return False
+        if required_role == "operator" and token_record.role != "operator":
+            return False
+        return True
 
 
 BLOCKED_NETWORKS = [

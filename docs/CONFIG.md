@@ -185,6 +185,23 @@ audio:
   quiet_hours_start: null
   quiet_hours_end: null
 
+# Hardware Buzzer on SBC GPIO (Acoustic Backup when Voice Audio is Silent/Absent)
+buzzer:
+  enabled: false                   # Enable hardware piezo buzzer
+  gpio_pin: null                   # SBC GPIO line offset for piezo buzzer driver
+  active_high: true                # true = HIGH energizes the buzzer
+  beep_on_alarm: true              # Sound buzzer on critical alarms when audio is unavailable
+
+# Local OLED Status Display (SSD1306 over I2C)
+display:
+  enabled: false                   # Enable local I2C SSD1306 status display
+  i2c_bus: 7                       # I2C bus number on ROCK Pi S (default 7 on Header 1)
+  i2c_address: 0x3C                # I2C address for SSD1306 (default 0x3C)
+  width: 128                       # Display width in pixels (128)
+  height: 64                       # Display height in pixels (64 or 32)
+  refresh_interval_s: 2.0          # Refresh loop interval in seconds
+  rotate: 0                        # Rotation: 0, 90, 180, or 270 degrees
+
 # Telegram Bot Critical Notifications
 telegram:
   enabled: false
@@ -435,6 +452,31 @@ Configures ALSA hardware sound device, espeak-ng voice synthesis, rate, and quie
 | `quiet_hours_start` | `Optional[int]` | `null` | >= 0, <= 23 | - |
 | `quiet_hours_end` | `Optional[int]` | `null` | >= 0, <= 23 | - |
 
+### BuzzerConfig (`buzzer`)
+
+Configures GPIO active piezo buzzer for acoustic alerts when voice audio is unavailable or suppressed.
+
+| Field | Type | Default | Constraints | Description |
+|---|---|---|---|---|
+| `enabled` | `bool` | `false` | - | Enable hardware piezo buzzer on SBC GPIO |
+| `gpio_pin` | `Optional[int]` | `null` | - | GPIO line offset for piezo buzzer driver |
+| `active_high` | `bool` | `true` | - | True if HIGH energizes the buzzer |
+| `beep_on_alarm` | `bool` | `true` | - | Sound audible alert on critical alarms when voice audio is unavailable |
+
+### DisplayConfig (`display`)
+
+Configures local I2C SSD1306 OLED status display (128x64 or 128x32) for physical at-a-glance tank, motor, link, and alarm monitoring.
+
+| Field | Type | Default | Constraints | Description |
+|---|---|---|---|---|
+| `enabled` | `bool` | `false` | - | Enable local I2C SSD1306 OLED status display |
+| `i2c_bus` | `int` | `7` | >= 0, <= 10 | I2C bus number on ROCK Pi S (default 7 on Header 1) |
+| `i2c_address` | `int` | `60` | >= 0, <= 127 | I2C address for SSD1306 (default 0x3C) |
+| `width` | `int` | `128` | >= 64, <= 256 | Display width in pixels (typically 128) |
+| `height` | `int` | `64` | >= 16, <= 128 | Display height in pixels (64 or 32) |
+| `refresh_interval_s` | `float` | `2.0` | >= 0.5, <= 30.0 | Interval in seconds for display refresh |
+| `rotate` | `int` | `0` | >= 0, <= 270 | Display rotation: 0, 90, 180, or 270 degrees |
+
 ### TelegramConfig (`telegram`)
 
 Configures out-of-band push notification dispatch for critical hardware alarms.
@@ -526,3 +568,4 @@ Commissioning checklist tracking input checks, relay click tests, gateway pairin
 7. **Supplementary Motor Current Protection:** Software current monitoring detects dry-run (loss of prime) and locked rotor. It provides supplementary protection and **NEVER replaces the physical bimetallic/electronic thermal overload relay or MPCB** required by electrical codes.
 8. **Authoritative Hardware Floats:** Continuous level sensing provides predictive control, telemetry, and automated leak detection. The electromechanical float switches (Full float NC, Sump float NO) remain the authoritative, non-bypassable hardware and software safety interlock.
 9. **Weather & Irrigation Safety Invariant:** Weather forecast skips, schedule windows, and daily budgets are evaluated as safety gates. All automatic irrigation actions must strictly pass `failsafe_engine.can_water_zone()`.
+10. **Acoustic & Local Display Failover:** When speech synthesizer hardware or audio drivers are absent or silenced by quiet hours, the hardware piezo buzzer sounds distinctive pulse patterns for critical alarms. The local SSD1306 OLED provides live at-a-glance status independent of network availability.

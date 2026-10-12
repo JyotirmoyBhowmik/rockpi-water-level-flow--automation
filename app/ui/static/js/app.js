@@ -148,6 +148,13 @@ function updateDashboard(state) {
     uptimeEl.textContent = `Uptime: ${state.uptime_seconds || 0}s`;
   }
 
+  // Update Sticky E-STOP status banner
+  const estopMotor = document.getElementById("estop-motor-status");
+  if (estopMotor) {
+    const mState = motor.state || "STANDBY";
+    estopMotor.textContent = `Motor: ${mState}${mState === "RUNNING" ? " ⚡" : ""}`;
+  }
+
   // Alarms Banner
   const alarmKeys = Object.keys(alarms);
   const banner = document.getElementById("alarms-banner");
@@ -959,10 +966,52 @@ document.addEventListener("click", (e) => {
     case "send-daily-summary":
       triggerDailySummarySend();
       break;
+    case "toggle-theme":
+      toggleTheme();
+      break;
     default:
       break;
   }
 });
+
+// Dark mode and theme management
+function initTheme() {
+  const savedTheme = localStorage.getItem("smart_water_theme");
+  const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  if (savedTheme === "dark" || (!savedTheme && prefersDark)) {
+    document.body.classList.add("dark-mode");
+    updateThemeButtonText(true);
+  } else {
+    document.body.classList.remove("dark-mode");
+    updateThemeButtonText(false);
+  }
+}
+
+function toggleTheme() {
+  const isDark = document.body.classList.toggle("dark-mode");
+  localStorage.setItem("smart_water_theme", isDark ? "dark" : "light");
+  updateThemeButtonText(isDark);
+}
+
+function updateThemeButtonText(isDark) {
+  const btn = document.getElementById("btn-toggle-theme");
+  if (btn) {
+    btn.textContent = isDark ? "☀️ Light Mode" : "🌙 Dark Mode";
+  }
+}
+
+// Service worker registration (PWA)
+function registerServiceWorker() {
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("/sw.js").then((reg) => {
+        console.log("PWA Service Worker registered:", reg.scope);
+      }).catch((err) => {
+        console.warn("Service Worker registration failed:", err);
+      });
+    });
+  }
+}
 
 // Change listeners for polarity checkboxes
 document.addEventListener("change", (e) => {
@@ -976,6 +1025,9 @@ document.addEventListener("change", (e) => {
 });
 
 document.addEventListener("DOMContentLoaded", () => {
+  initTheme();
+  registerServiceWorker();
+
   // Populate token from storage if present
   const savedToken = getStoredToken();
   if (savedToken) {
