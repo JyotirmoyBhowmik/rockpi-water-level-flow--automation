@@ -9,7 +9,7 @@ Enforces relay polarity safety rules at startup.
 import asyncio
 import logging
 import os
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 from app.config import system_config
 from app.hardware.gpio_backend import GPIOBackend, create_gpio_backend
 

@@ -1,0 +1,2 @@
+# Ensure bash scripts maintain Unix line endings (LF) across checkouts
+*.sh text eol=lf

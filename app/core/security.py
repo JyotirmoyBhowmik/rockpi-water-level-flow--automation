@@ -6,12 +6,15 @@ Prints raw tokens exactly ONCE on initial generation or rotation.
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
 from pathlib import Path
 import secrets
+import socket
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 from app.config import system_config
@@ -116,11 +119,6 @@ class SecurityManager:
         except Exception as e:
             logger.error("Token verification error: %s", e)
             return False
-
-
-import ipaddress
-import socket
-import urllib.parse
 
 
 def validate_webhook_url(url: str, allowlist: List[str]) -> Tuple[bool, Optional[str]]:

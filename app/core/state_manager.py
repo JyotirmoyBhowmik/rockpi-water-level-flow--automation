@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from app.config import DATA_DIR, system_config
 from app.hardware.rtc import get_monotonic_now, is_system_clock_valid
 
@@ -259,7 +259,9 @@ class StateManager:
             g["node_online"] = True
             g["node_last_seen"] = now
             g["last_packet_ts"] = now
+            g["last_heartbeat_ts"] = now
             g["is_stale"] = False
+            g["state"] = "ONLINE"
             g["uptime_s"] = uptime_s
             g["boot_count"] = boot
             g["ads_ok"] = ads_ok
@@ -305,8 +307,17 @@ class StateManager:
             g["last_packet_ts"] = now
             z_key = f"zone_{zone_idx}"
             if z_key in g["zones"]:
-                g["zones"][z_key]["flow_delta"] = delta_pulses
-                g["zones"][z_key]["flow_pulses"] = g["zones"][z_key].get("flow_pulses", 0) + delta_pulses
+                z = g["zones"][z_key]
+                z["flow_delta"] = delta_pulses
+                z["flow_pulses"] = z.get("flow_pulses", 0) + delta_pulses
+                z["last_update_ts"] = now
+
+    async def set_garden_degraded(self, reason: str = "Stale heartbeat") -> None:
+        async with self._lock:
+            g = self._state["garden"]
+            g["is_stale"] = True
+            g["state"] = "DEGRADED"
+            self._state["system_status"] = "DEGRADED"
 
     async def update_garden_link_status(self, gateway_connected: bool, node_online: bool) -> None:
         async with self._lock:
@@ -315,6 +326,8 @@ class StateManager:
             g["node_online"] = node_online
             if not node_online:
                 g["is_stale"] = True
+                g["state"] = "DEGRADED"
+                self._state["system_status"] = "DEGRADED"
 
     # -------------------------------------------------------------------------
     # Motor & Actuator State
@@ -325,7 +338,6 @@ class StateManager:
             m = self._state["motor"]
             old_state = m["state"]
             m["state"] = new_state
-            now = time.time()
             mono_now = get_monotonic_now()
 
             if new_state == "RUNNING" and old_state != "RUNNING":

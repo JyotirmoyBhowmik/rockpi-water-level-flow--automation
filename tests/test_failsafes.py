@@ -15,10 +15,9 @@ Covers:
   - Probe voltage sanity band filtering
 """
 
-import asyncio
 import time
 import pytest
-from app.config import system_config, ZoneCalibration, ZoneConfig
+from app.config import system_config
 from app.core.state_manager import state_manager
 from app.engine.failsafes import failsafe_engine
 from app.engine.plant_controller import PlantIrrigationController
@@ -318,6 +317,9 @@ async def test_zone_cooldown_enforcement(monkeypatch):
     ok, reason = failsafe_engine.can_water_zone("zone_1", is_manual=False)
     assert ok is False
     assert "cooldown protection" in reason
+
+    # Reset cooldown to prevent polluting subsequent tests
+    state_manager._state["garden"]["zones"]["zone_1"]["cooldown_until_ts"] = 0.0
 
 
 # -----------------------------------------------------------------------------

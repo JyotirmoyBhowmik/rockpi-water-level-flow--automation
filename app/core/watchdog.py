@@ -10,7 +10,6 @@ import logging
 import os
 import socket
 import sys
-import time
 from typing import Dict, Optional, Tuple
 from app.config import system_config
 from app.hardware.gpio_driver import head_end_gpio
@@ -188,6 +187,20 @@ class WatchdogGuardian:
                 self._notify_sock.sendto(msg, path)
             except Exception as e:
                 logger.debug("Systemd sd_notify write error: %s", e)
+
+    def notify_ready(self) -> bool:
+        """Sends READY=1 to systemd via $NOTIFY_SOCKET once all subsystems are online."""
+        if self._notify_sock and self._notify_path:
+            try:
+                msg = b"READY=1\nSTATUS=Smart Water Controller online\n"
+                path = ("\0" + self._notify_path[1:]) if self._notify_path.startswith("@") else self._notify_path
+                self._notify_sock.sendto(msg, path)
+                logger.info("Sent READY=1 to systemd notify socket.")
+                return True
+            except Exception as e:
+                logger.warning("Failed to send READY=1 to systemd: %s", e)
+                return False
+        return False
 
 
 watchdog_manager = WatchdogGuardian()

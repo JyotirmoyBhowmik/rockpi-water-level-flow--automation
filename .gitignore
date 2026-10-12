@@ -10,4 +10,11 @@ data/
 venv/
 .env
 config.yaml
+settings.yaml
 .coverage
+.pio/
+*.exe
+secrets.h
+espnow.key
+clean_shutdown
+.clean_shutdown

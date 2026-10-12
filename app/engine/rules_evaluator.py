@@ -18,7 +18,6 @@ from pydantic import BaseModel, Field
 from app.alerts.telegram_client import telegram_notifier
 from app.config import system_config
 from app.core.state_manager import state_manager
-from app.engine.failsafes import failsafe_engine
 from app.engine.motor_controller import motor_controller
 from app.engine.plant_controller import plant_controller
 from app.hardware.audio_driver import audio_controller

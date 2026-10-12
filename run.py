@@ -3,7 +3,6 @@ Application Entrypoint for Radxa ROCK Pi S Smart Water Automation.
 Runs a single-process asynchronous ASGI runtime (uvicorn + FastAPI) strictly within <35MB RAM.
 """
 
-import sys
 import uvicorn
 from app.config import system_config
 
@@ -14,7 +13,7 @@ def main():
     print(" RADXA ROCK PI S - INDUSTRIAL SMART WATER CONTROLLER")
     print(" Version: 1.0.0")
     print(f" Listening: http://{system_config.network.bind_address}:{system_config.network.port}")
-    print(f" Config: /etc/smart-water/config.yaml")
+    print(" Config: /etc/smart-water/config.yaml")
     print("=" * 72)
 
     # Low-overhead uvicorn settings for RK3308 512MB RAM

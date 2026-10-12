@@ -4,7 +4,6 @@ Pure safety logic testing with isolated SQLite database and zero hardware depend
 """
 
 from pathlib import Path
-import pytest
 import pytest_asyncio
 from app.core.event_bus import bus
 from app.core.state_manager import state_manager
@@ -43,7 +42,18 @@ async def setup_test_environment(tmp_path: Path):
     failsafe_engine.motor_cooldown_until = 0.0
     failsafe_engine.manual_motor_lockout = False
     failsafe_engine.leak_alarm_active = False
-    failsafe_engine.flow_faults = {f"zone_{i}": False for i in range(1, 5)}
+    import time
+    now = time.time()
+    state_manager._state["garden"]["gateway_connected"] = True
+    state_manager._state["garden"]["node_online"] = True
+    state_manager._state["garden"]["is_stale"] = False
+    state_manager._state["garden"]["last_packet_ts"] = now
+    state_manager._state["garden"]["last_heartbeat_ts"] = now
+    state_manager._state["garden"]["node_last_seen"] = now
+    state_manager._state["garden"]["gateway_last_seen"] = now
+    state_manager._state["garden"]["reservoir_last_update_ts"] = now
+    for z in state_manager._state["garden"]["zones"].values():
+        z["last_update_ts"] = now
 
     yield
 

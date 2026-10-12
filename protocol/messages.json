@@ -2,103 +2,205 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "SmartWaterProtocolV1_1",
   "description": "JSON Lines binary/serial contract between ROCK Pi S Controller and ESP32-C3 Garden Node",
+  "canonical_rules": {
+    "description": "Deterministic canonical string format shared between Python and C++ without re-serializing parsed JSON",
+    "separator_comma": ",",
+    "separator_colon": ":",
+    "no_spaces": true,
+    "no_sig_in_unsigned": true,
+    "floats_format": "%.3f",
+    "integers_format": "plain integer (no scientific notation)",
+    "booleans_format": "true or false",
+    "signing_algorithm": "HMAC-SHA256 truncated to first 16 lowercase hex characters",
+    "verification_rule": "Locate ',\"sig\":\"<16hex>\"}' suffix textually, strip it and restore trailing '}' to obtain exact original bytes for HMAC verification"
+  },
+  "fixed_key_orders": {
+    "hb": [
+      "v",
+      "t",
+      "nonce",
+      "seq",
+      "uptime_s",
+      "res_wet",
+      "ads_ok",
+      "pumps",
+      "reset_reason",
+      "rssi"
+    ],
+    "soil": [
+      "v",
+      "t",
+      "nonce",
+      "seq",
+      "z",
+      "volts"
+    ],
+    "flow": [
+      "v",
+      "t",
+      "nonce",
+      "seq",
+      "z",
+      "delta_pulses",
+      "period_ms"
+    ],
+    "pump": [
+      "v",
+      "t",
+      "nonce",
+      "seq",
+      "z",
+      "on",
+      "reason",
+      "run_s"
+    ],
+    "ack": [
+      "v",
+      "t",
+      "nonce",
+      "seq",
+      "id",
+      "status",
+      "err"
+    ],
+    "cmd": [
+      "v",
+      "t",
+      "nonce",
+      "seq",
+      "id",
+      "z",
+      "run_s"
+    ],
+    "stop": [
+      "v",
+      "t",
+      "nonce",
+      "seq",
+      "id",
+      "z"
+    ],
+    "stop_all": [
+      "v",
+      "t",
+      "nonce",
+      "seq",
+      "id"
+    ]
+  },
   "type": "object",
-  "required": ["v", "t", "seq", "sig"],
+  "required": [
+    "v",
+    "t",
+    "nonce",
+    "seq",
+    "sig"
+  ],
   "properties": {
     "v": {
       "type": "string",
-      "enum": ["1.1"],
+      "enum": [
+        "1.1"
+      ],
       "description": "Protocol version identifier"
     },
     "t": {
       "type": "string",
-      "enum": ["hb", "soil", "flow", "cmd", "stop", "stop_all", "ack"],
+      "enum": [
+        "hb",
+        "soil",
+        "flow",
+        "pump",
+        "cmd",
+        "stop",
+        "stop_all",
+        "ack",
+        "gw_init",
+        "gw_hb",
+        "gw_err"
+      ],
       "description": "Packet message type"
+    },
+    "nonce": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Random 32-bit boot nonce generated at boot session start"
     },
     "seq": {
       "type": "integer",
       "minimum": 0,
-      "description": "Strictly monotonic packet sequence number per sender session"
+      "description": "Strictly monotonic packet sequence number per boot session"
     },
     "sig": {
       "type": "string",
       "pattern": "^[0-9a-f]{16}$",
-      "description": "First 16 hexadecimal chars of HMAC-SHA256 over canonical JSON without sig key"
+      "description": "First 16 hexadecimal chars of HMAC-SHA256 over fixed-order canonical string"
     }
   },
-  "oneOf": [
+  "golden_vectors": [
     {
-      "description": "Heartbeat Packet (Node -> Gateway -> Pi)",
-      "properties": {
-        "t": { "const": "hb" },
-        "boot": { "type": "integer", "minimum": 0 },
-        "uptime_s": { "type": "integer", "minimum": 0 },
-        "res_wet": { "type": "boolean" },
-        "ads_ok": { "type": "boolean" },
-        "pumps": {
-          "type": "array",
-          "items": { "type": "integer", "enum": [0, 1] },
-          "minItems": 4,
-          "maxItems": 4
-        },
-        "rssi": { "type": "integer" }
-      },
-      "required": ["boot", "uptime_s", "res_wet", "ads_ok", "pumps", "rssi"]
+      "name": "heartbeat_packet",
+      "t": "hb",
+      "secret_key": "test-secret-key-32-chars-long12345",
+      "unsigned": "{\"v\":\"1.1\",\"t\":\"hb\",\"nonce\":1001,\"seq\":1,\"uptime_s\":120,\"res_wet\":true,\"ads_ok\":true,\"pumps\":[0,0,0,0],\"reset_reason\":1,\"rssi\":-65}",
+      "sig": "3d4a199760f47ebf",
+      "signed_line": "{\"v\":\"1.1\",\"t\":\"hb\",\"nonce\":1001,\"seq\":1,\"uptime_s\":120,\"res_wet\":true,\"ads_ok\":true,\"pumps\":[0,0,0,0],\"reset_reason\":1,\"rssi\":-65,\"sig\":\"3d4a199760f47ebf\"}\n"
     },
     {
-      "description": "Soil Probe Packet (Node -> Gateway -> Pi)",
-      "properties": {
-        "t": { "const": "soil" },
-        "z": { "type": "integer", "minimum": 1, "maximum": 4 },
-        "volts": { "type": "number", "minimum": 0.0, "maximum": 3.6 }
-      },
-      "required": ["z", "volts"]
+      "name": "soil_probe_packet",
+      "t": "soil",
+      "secret_key": "test-secret-key-32-chars-long12345",
+      "unsigned": "{\"v\":\"1.1\",\"t\":\"soil\",\"nonce\":1001,\"seq\":2,\"z\":1,\"volts\":1.842}",
+      "sig": "7dd8f26ab85b860e",
+      "signed_line": "{\"v\":\"1.1\",\"t\":\"soil\",\"nonce\":1001,\"seq\":2,\"z\":1,\"volts\":1.842,\"sig\":\"7dd8f26ab85b860e\"}\n"
     },
     {
-      "description": "Flow Meter Delta Packet (Node -> Gateway -> Pi)",
-      "properties": {
-        "t": { "const": "flow" },
-        "z": { "type": "integer", "minimum": 1, "maximum": 4 },
-        "pulses_delta": { "type": "integer", "minimum": 0 }
-      },
-      "required": ["z", "pulses_delta"]
+      "name": "flow_delta_packet",
+      "t": "flow",
+      "secret_key": "test-secret-key-32-chars-long12345",
+      "unsigned": "{\"v\":\"1.1\",\"t\":\"flow\",\"nonce\":1001,\"seq\":3,\"z\":1,\"delta_pulses\":15,\"period_ms\":1000}",
+      "sig": "0e8e872241b8db70",
+      "signed_line": "{\"v\":\"1.1\",\"t\":\"flow\",\"nonce\":1001,\"seq\":3,\"z\":1,\"delta_pulses\":15,\"period_ms\":1000,\"sig\":\"0e8e872241b8db70\"}\n"
     },
     {
-      "description": "Pump Run Command (Pi -> Gateway -> Node)",
-      "properties": {
-        "t": { "const": "cmd" },
-        "id": { "type": "string" },
-        "z": { "type": "integer", "minimum": 1, "maximum": 4 },
-        "run_s": { "type": "integer", "minimum": 1, "maximum": 60 }
-      },
-      "required": ["id", "z", "run_s"]
+      "name": "pump_event_packet",
+      "t": "pump",
+      "secret_key": "test-secret-key-32-chars-long12345",
+      "unsigned": "{\"v\":\"1.1\",\"t\":\"pump\",\"nonce\":1001,\"seq\":4,\"z\":1,\"on\":true,\"reason\":\"cmd\",\"run_s\":15}",
+      "sig": "5fe9711f9473028a",
+      "signed_line": "{\"v\":\"1.1\",\"t\":\"pump\",\"nonce\":1001,\"seq\":4,\"z\":1,\"on\":true,\"reason\":\"cmd\",\"run_s\":15,\"sig\":\"5fe9711f9473028a\"}\n"
     },
     {
-      "description": "Pump Stop Command (Pi -> Gateway -> Node)",
-      "properties": {
-        "t": { "const": "stop" },
-        "id": { "type": "string" },
-        "z": { "type": "integer", "minimum": 1, "maximum": 4 }
-      },
-      "required": ["id", "z"]
+      "name": "command_ack_packet",
+      "t": "ack",
+      "secret_key": "test-secret-key-32-chars-long12345",
+      "unsigned": "{\"v\":\"1.1\",\"t\":\"ack\",\"nonce\":1001,\"seq\":5,\"id\":\"cmd-001\",\"status\":\"ok\",\"err\":\"\"}",
+      "sig": "0a2d092007f31086",
+      "signed_line": "{\"v\":\"1.1\",\"t\":\"ack\",\"nonce\":1001,\"seq\":5,\"id\":\"cmd-001\",\"status\":\"ok\",\"err\":\"\",\"sig\":\"0a2d092007f31086\"}\n"
     },
     {
-      "description": "Emergency Stop All Command (Pi -> Gateway -> Node)",
-      "properties": {
-        "t": { "const": "stop_all" },
-        "id": { "type": "string" }
-      },
-      "required": ["id"]
+      "name": "pump_cmd_packet",
+      "t": "cmd",
+      "secret_key": "test-secret-key-32-chars-long12345",
+      "unsigned": "{\"v\":\"1.1\",\"t\":\"cmd\",\"nonce\":2002,\"seq\":1,\"id\":\"cmd-001\",\"z\":1,\"run_s\":15}",
+      "sig": "756580f2703f2006",
+      "signed_line": "{\"v\":\"1.1\",\"t\":\"cmd\",\"nonce\":2002,\"seq\":1,\"id\":\"cmd-001\",\"z\":1,\"run_s\":15,\"sig\":\"756580f2703f2006\"}\n"
     },
     {
-      "description": "Command Acknowledgment (Node -> Gateway -> Pi)",
-      "properties": {
-        "t": { "const": "ack" },
-        "id": { "type": "string" },
-        "status": { "type": "string", "enum": ["ok", "err", "rejected"] },
-        "message": { "type": "string" }
-      },
-      "required": ["id", "status"]
+      "name": "stop_cmd_packet",
+      "t": "stop",
+      "secret_key": "test-secret-key-32-chars-long12345",
+      "unsigned": "{\"v\":\"1.1\",\"t\":\"stop\",\"nonce\":2002,\"seq\":2,\"id\":\"cmd-002\",\"z\":1}",
+      "sig": "92b186b1f5e489fa",
+      "signed_line": "{\"v\":\"1.1\",\"t\":\"stop\",\"nonce\":2002,\"seq\":2,\"id\":\"cmd-002\",\"z\":1,\"sig\":\"92b186b1f5e489fa\"}\n"
+    },
+    {
+      "name": "stop_all_cmd_packet",
+      "t": "stop_all",
+      "secret_key": "test-secret-key-32-chars-long12345",
+      "unsigned": "{\"v\":\"1.1\",\"t\":\"stop_all\",\"nonce\":2002,\"seq\":3,\"id\":\"cmd-003\"}",
+      "sig": "73b8a1e4c99759a6",
+      "signed_line": "{\"v\":\"1.1\",\"t\":\"stop_all\",\"nonce\":2002,\"seq\":3,\"id\":\"cmd-003\",\"sig\":\"73b8a1e4c99759a6\"}\n"
     }
   ]
 }

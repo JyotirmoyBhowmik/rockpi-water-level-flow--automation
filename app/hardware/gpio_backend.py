@@ -5,7 +5,7 @@ Supports Debian 12 (python3-libgpiod / libgpiod 1.6.x) and newer libgpiod 2.x.
 
 from abc import ABC, abstractmethod
 import logging
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("smart_water.gpio_backend")
 
@@ -160,7 +160,7 @@ class LibgpiodV2Backend(GPIOBackend):
     def request_input(self, line_offset: int, consumer: str = "smart-water", bias: str = "pull_up") -> bool:
         try:
             import gpiod
-            from gpiod.line import Direction, Bias, Value
+            from gpiod.line import Direction, Bias
 
             settings = gpiod.LineSettings()
             settings.direction = Direction.INPUT

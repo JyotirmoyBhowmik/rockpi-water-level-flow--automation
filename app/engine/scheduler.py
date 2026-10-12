@@ -3,24 +3,22 @@ Periodic Loop Scheduler & Hardware Event Coordinator for Radxa ROCK Pi S.
 Schedules 1Hz head-end safety polling, 5Hz rule evaluations, and gateway packet routing.
 """
 
+from datetime import datetime, timezone
 import asyncio
 import logging
 from typing import Any, Dict, Optional
-from app.config import system_config
 from app.core.event_bus import bus
 from app.core.state_manager import state_manager
+from app.core.watchdog import health_monitor
 from app.engine.failsafes import failsafe_engine
 from app.engine.motor_controller import motor_controller
 from app.engine.plant_controller import plant_controller
 from app.engine.rules_evaluator import rules_evaluator
 from app.hardware.gateway_driver import garden_gateway
 from app.hardware.gpio_driver import head_end_gpio
+from app.hardware.protocol import FlowPacket, HeartbeatPacket, SoilPacket
 
 logger = logging.getLogger("smart_water.scheduler")
-
-
-from app.core.watchdog import health_monitor
-from app.hardware.protocol import FlowPacket, HeartbeatPacket, SoilPacket
 
 
 class SystemScheduler:

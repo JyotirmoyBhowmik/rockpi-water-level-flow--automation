@@ -3,7 +3,7 @@ Abstract Base Interfaces for Hardware Drivers (Sensors, Actuators, Audio).
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 class BaseGPIOController(ABC):

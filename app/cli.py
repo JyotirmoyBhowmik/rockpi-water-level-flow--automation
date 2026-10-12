@@ -10,8 +10,6 @@ import os
 from pathlib import Path
 import secrets
 import shutil
-import sys
-from app.config import system_config
 from app.core.security import security_manager
 from app.core.state_manager import state_manager
 
@@ -57,19 +55,61 @@ def restore_backup(backup_path_str: str) -> bool:
         return False
 
 
-def gen_espnow_secrets():
-    """Generates random shared secret for ESP-NOW and Pi gateway."""
-    raw_key = secrets.token_hex(16)
-    print("\n" + "=" * 65)
-    print(" ESP-NOW & SERIAL HMAC-SHA256 SHARED SECRET GENERATOR (v1.1)")
-    print("=" * 65)
-    print(f" Shared Key: {raw_key}\n")
-    print(" [1] Add to /var/lib/smart-water/settings.yaml (or config.yaml):")
+def gen_espnow_secrets() -> None:
+    """
+    Generates cryptographically random PMK (16 bytes hex), LMK (16 bytes hex),
+    and shared key (32 bytes hex), writes /etc/smart-water/espnow.key (mode 0600)
+    and prints #define lines to paste into firmware secrets.h (Part 2.2).
+    """
+    pmk = secrets.token_hex(16)
+    lmk = secrets.token_hex(16)
+    shared_key = secrets.token_hex(32)
+
+    # 1. Attempt writing to /etc/smart-water/espnow.key (0600)
+    target_paths = [
+        Path("/etc/smart-water/espnow.key"),
+        Path(os.getenv("SMART_WATER_DATA_DIR", "/var/lib/smart-water")) / "espnow.key",
+    ]
+    written_path = None
+    for p in target_paths:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(f"ESPNOW_PMK={pmk}\n")
+                f.write(f"ESPNOW_LMK={lmk}\n")
+                f.write(f"ESPNOW_SHARED_KEY={shared_key}\n")
+            try:
+                os.chmod(p, 0o600)
+            except OSError:
+                pass
+            written_path = p
+            break
+        except OSError:
+            continue
+
+    print("\n" + "=" * 70)
+    print(" ESP-NOW & SERIAL CRYPTOGRAPHIC SECRETS GENERATOR (v1.1)")
+    print("=" * 70)
+    if written_path:
+        print(f" Secrets written to: {written_path} (mode 0600)")
+    else:
+        print(" Note: Could not write to /etc/smart-water/espnow.key (permission denied).")
+
+    print("\n Paste the following into /var/lib/smart-water/settings.yaml:")
     print(" garden_gateway:")
-    print(f'   shared_key: "{raw_key}"\n')
-    print(" [2] Add to firmware/node/include/secrets.h & gateway/include/secrets.h:")
-    print(f' #define ESPNOW_SHARED_KEY "{raw_key}"')
-    print("=" * 65 + "\n")
+    print("   enabled: true")
+    print(f'   shared_key: "{shared_key}"')
+
+    print("\n Paste the following into firmware/node/include/secrets.h")
+    print(" and firmware/gateway/include/secrets.h:")
+    print("-" * 70)
+    print("#pragma once")
+    print(f'#define ESPNOW_PMK "{pmk}"')
+    print(f'#define ESPNOW_LMK "{lmk}"')
+    print(f'#define ESPNOW_SHARED_KEY "{shared_key}"')
+    print("-" * 70)
+    print(" Keep secrets.h private and NEVER commit to source control.")
+    print("=" * 70 + "\n")
 
 
 def main():

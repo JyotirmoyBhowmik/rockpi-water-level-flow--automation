@@ -25,7 +25,32 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install -r requirements-dev.txt
+        pip install ruff platformio
 
-    - name: Run safety regression tests and protocol contract verification
+    - name: Run Ruff Lint Checks
+      run: |
+        ruff check .
+
+    - name: Run ShellCheck on installation scripts
+      run: |
+        shellcheck install.sh uninstall.sh
+
+    - name: Run Python safety & protocol regression tests with coverage
       run: |
         pytest -v --cov=app --cov-report=term-missing
+
+    - name: Prepare test secrets for PlatformIO firmware builds
+      run: |
+        echo '#pragma once' > firmware/gateway/include/secrets.h
+        echo '#define ESPNOW_PMK "0123456789abcdef0123456789abcdef"' >> firmware/gateway/include/secrets.h
+        echo '#define ESPNOW_LMK "0123456789abcdef0123456789abcdef"' >> firmware/gateway/include/secrets.h
+        echo '#define ESPNOW_SHARED_KEY "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"' >> firmware/gateway/include/secrets.h
+        cp firmware/gateway/include/secrets.h firmware/node/include/secrets.h
+
+    - name: Build Gateway Firmware with PlatformIO
+      run: |
+        pio run -d firmware/gateway
+
+    - name: Build Node Firmware with PlatformIO
+      run: |
+        pio run -d firmware/node

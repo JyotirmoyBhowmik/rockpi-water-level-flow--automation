@@ -3,7 +3,6 @@ FastAPI Server Factory with Bearer Token Security, Rate Limiting, and Safe Shutd
 Ensures outputs are forced OFF on any exit path or unhandled exception.
 """
 
-import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import json
@@ -13,8 +12,7 @@ import sys
 import time
 import uuid
 from typing import AsyncGenerator
-from fastapi import FastAPI, HTTPException, Request, Response, status
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -23,7 +21,7 @@ from app.api.routes_control import router as control_router
 from app.api.routes_rules import router as rules_router
 from app.api.routes_telemetry import router as telemetry_router
 from app.alerts.telegram_client import telegram_notifier
-from app.config import system_config
+from app.config import DATA_DIR, system_config
 from app.core.event_bus import bus
 from app.core.security import security_manager
 from app.core.state_manager import state_manager
@@ -92,6 +90,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await rules_evaluator.load_rules_from_db()
     await scheduler.start()
 
+    # 6. Notify systemd that service is fully started and ready
+    watchdog_manager.notify_ready()
+
+    # 7. Check clean shutdown marker (Part 4.3)
+    clean_marker = DATA_DIR / ".clean_shutdown"
+    if clean_marker.exists():
+        logger.info("Normal startup detected (clean shutdown marker was present).")
+        try:
+            clean_marker.unlink()
+        except OSError:
+            pass
+    else:
+        logger.warning("Unexpected reboot detected (no clean shutdown marker found).")
+        msg = "Smart Water Controller restarted unexpectedly (possible power loss or watchdog reset)"
+        await telegram_notifier.send_alert("UNEXPECTED_RESTART", msg)
+        await state_manager.log_event("UNEXPECTED_RESTART", "WARNING", msg)
+
     logger.info(
         "Smart Water Controller online. Listen=%s:%d. Hardware Ready=%s",
         system_config.network.bind_address,
@@ -116,6 +131,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await telegram_notifier.stop()
     await audio_controller.stop()
     await bus.stop()
+
+    # Write clean shutdown marker (Part 4.3)
+    try:
+        clean_marker.touch()
+        logger.info("Clean shutdown marker written to %s", clean_marker)
+    except Exception as exc:
+        logger.warning("Could not write clean shutdown marker: %s", exc)
+
     logger.info("All subsystems safely de-energized.")
 
 

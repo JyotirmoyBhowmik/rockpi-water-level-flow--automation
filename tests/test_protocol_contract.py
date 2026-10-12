@@ -1,204 +1,232 @@
 """
 Protocol v1.1 Contract Verification Test.
 Validates bi-directional serialization and parsing against protocol/messages.json schema:
-  - Canonical JSON serialization
-  - HMAC-SHA256 signature generation and validation
-  - Monotonic sequence numbers and boot cycle reset
-  - Python model of Node's parser and Pi's driver interoperability
+  - Canonical JSON fixed-order serialization
+  - Golden test vector verification against protocol/messages.json
+  - Bi-directional interoperability between native C++ signer (host_cpp_signer) and Python verifier
+  - Monotonic sequence numbers and random boot nonce session reset
+  - Signature tampering rejection
 """
 
-import hashlib
-import hmac
 import json
+import os
 from pathlib import Path
-import pytest
+import shutil
+import subprocess
+
 from app.hardware.protocol import (
     AckPacket,
     CommandPacket,
     FlowPacket,
     HeartbeatPacket,
+    PumpEventPacket,
     SequenceTracker,
     SoilPacket,
     StopAllPacket,
     StopPacket,
-    canonicalize_packet_dict,
-    compute_packet_signature,
+    compute_sig16,
+    format_ack_unsigned,
+    format_cmd_unsigned,
+    format_flow_unsigned,
+    format_hb_unsigned,
+    format_pump_unsigned,
+    format_soil_unsigned,
+    format_stop_all_unsigned,
+    format_stop_unsigned,
     parse_and_validate_packet,
-    sign_packet,
+    sign_packet_string,
+    verify_and_strip_sig,
 )
 
-SHARED_KEY = "test-secret-garden-v1.1-key"
+SHARED_KEY = "test-secret-key-32-chars-long12345"
 
 
-def test_schema_file_exists_and_valid_json():
-    """Verifies shared schema file protocol/messages.json is present and valid JSON Schema."""
+def get_or_compile_cpp_binary() -> Path:
+    """Finds g++ compiler and ensures tests/host_cpp_signer is compiled."""
+    exe_name = "host_cpp_signer.exe" if os.name == "nt" else "host_cpp_signer"
+    exe_path = Path("tests") / exe_name
+
+    gpp = shutil.which("g++")
+    if not gpp and os.name == "nt":
+        # Check scoop path
+        scoop_gpp = Path(os.environ.get("USERPROFILE", "")) / "scoop" / "apps" / "gcc" / "current" / "bin" / "g++.exe"
+        if scoop_gpp.exists():
+            gpp = str(scoop_gpp)
+
+    if not exe_path.exists():
+        assert gpp is not None, f"g++ not found on PATH or scoop to compile {exe_path}"
+        src_path = Path("tests") / "host_cpp_signer.cpp"
+        cmd = [gpp, "-O2", "-Wall", str(src_path), "-o", str(exe_path)]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        assert res.returncode == 0, f"Compilation failed: {res.stderr}"
+
+    return exe_path
+
+
+def test_schema_file_exists_and_golden_vectors():
+    """Verifies protocol/messages.json is present and all golden vectors match."""
     schema_path = Path("protocol/messages.json")
     assert schema_path.exists(), "protocol/messages.json must exist"
     with open(schema_path, "r", encoding="utf-8") as f:
         schema = json.load(f)
+
     assert schema.get("title") == "SmartWaterProtocolV1_1"
-    assert "oneOf" in schema
-    assert "required" in schema
-    assert "properties" in schema
+    assert "canonical_rules" in schema
+    assert "fixed_key_orders" in schema
+    golden_vectors = schema.get("golden_vectors", [])
+    assert len(golden_vectors) >= 8
+
+    for gv in golden_vectors:
+        key = gv["secret_key"]
+        unsigned = gv["unsigned"]
+        expected_sig = gv["sig"]
+        signed_line = gv["signed_line"]
+
+        # 1. Compute sig in Python
+        computed_sig = compute_sig16(unsigned, key)
+        assert computed_sig == expected_sig, f"Vector {gv['name']} signature mismatch"
+
+        # 2. Verify signature stripping
+        valid, extracted_unsigned, actual_sig, err = verify_and_strip_sig(signed_line, key)
+        assert valid is True, f"Vector {gv['name']} failed verification: {err}"
+        assert extracted_unsigned == unsigned
+        assert actual_sig == expected_sig
 
 
-def test_canonical_json_and_signature_computation():
-    """Verifies that dict key ordering does not alter canonical representation or signature."""
-    pkt1 = {"v": "1.1", "t": "hb", "seq": 42, "boot": 1, "uptime_s": 100}
-    pkt2 = {"uptime_s": 100, "t": "hb", "boot": 1, "v": "1.1", "seq": 42}
-
-    canon1 = canonicalize_packet_dict(pkt1)
-    canon2 = canonicalize_packet_dict(pkt2)
-    assert canon1 == canon2
-
-    sig1 = compute_packet_signature(pkt1, SHARED_KEY)
-    sig2 = compute_packet_signature(pkt2, SHARED_KEY)
-    assert sig1 == sig2
-    assert len(sig1) == 16
-
-
-def test_pi_to_node_command_packet_contract():
+def test_cpp_generated_packets_verified_by_python():
     """
-    Contract test: feeds exact bytes emitted by Pi's driver into Node's parser logic.
+    Runs native C++ implementation (host_cpp_signer --generate) and passes
+    emitted bytes into Python's parse_and_validate_packet.
     """
-    cmd_dict = {
-        "v": "1.1",
-        "t": "cmd",
-        "id": "cmd-test-uuid-1234",
-        "z": 2,
-        "run_s": 25,
-        "seq": 1,
-    }
-    signed_dict = sign_packet(cmd_dict, SHARED_KEY)
-    raw_line_bytes = (json.dumps(signed_dict, separators=(",", ":")) + "\n").encode("utf-8")
+    cpp_exe = get_or_compile_cpp_binary()
+    proc = subprocess.run(
+        [str(cpp_exe), "--generate", SHARED_KEY],
+        capture_output=True,
+        text=True,
+        check=True
+    )
+    lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    assert len(lines) == 8, f"Expected 8 packets from C++ signer, got {len(lines)}"
 
-    # Node's parser model
-    node_seq_tracker = SequenceTracker()
-    parsed_pkt, err = parse_and_validate_packet(raw_line_bytes, SHARED_KEY, node_seq_tracker)
+    seq_tracker = SequenceTracker()
+    parsed_packets = []
+    for line in lines:
+        pkt, err = parse_and_validate_packet(line, SHARED_KEY, seq_tracker)
+        assert err is None, f"Python failed to validate C++ packet: {line} (error: {err})"
+        assert pkt is not None
+        parsed_packets.append(pkt)
 
-    assert err is None
-    assert isinstance(parsed_pkt, CommandPacket)
-    assert parsed_pkt.v == "1.1"
-    assert parsed_pkt.t == "cmd"
-    assert parsed_pkt.id == "cmd-test-uuid-1234"
-    assert parsed_pkt.z == 2
-    assert parsed_pkt.run_s == 25
-    assert parsed_pkt.seq == 1
+    # Validate model types received from C++
+    assert isinstance(parsed_packets[0], HeartbeatPacket)
+    assert parsed_packets[0].uptime_s == 120
+    assert parsed_packets[0].rssi == -65
+
+    assert isinstance(parsed_packets[1], SoilPacket)
+    assert parsed_packets[1].z == 1
+    assert abs(parsed_packets[1].volts - 1.842) < 0.001
+
+    assert isinstance(parsed_packets[2], FlowPacket)
+    assert parsed_packets[2].delta_pulses == 15
+
+    assert isinstance(parsed_packets[3], PumpEventPacket)
+    assert parsed_packets[3].on is True
+    assert parsed_packets[3].reason == "cmd"
+
+    assert isinstance(parsed_packets[4], AckPacket)
+    assert parsed_packets[4].status == "ok"
+
+    assert isinstance(parsed_packets[5], CommandPacket)
+    assert parsed_packets[5].z == 1
+    assert parsed_packets[5].run_s == 15
+
+    assert isinstance(parsed_packets[6], StopPacket)
+    assert parsed_packets[6].z == 1
+
+    assert isinstance(parsed_packets[7], StopAllPacket)
+    assert parsed_packets[7].id == "cmd-003"
 
 
-def test_node_to_pi_telemetry_packet_contract():
+def test_python_generated_packets_verified_by_cpp():
     """
-    Contract test: feeds exact bytes emitted by Node into Pi driver parser.
+    Generates signed packets using Python's formatters and pipes them into
+    the native C++ verifier (host_cpp_signer --verify).
     """
-    # 1. Heartbeat
-    hb_dict = {
-        "v": "1.1",
-        "t": "hb",
-        "seq": 10,
-        "boot": 3,
-        "uptime_s": 120,
-        "res_wet": True,
-        "ads_ok": True,
-        "pumps": [0, 1, 0, 0],
-        "rssi": -65,
-    }
-    signed_hb = sign_packet(hb_dict, SHARED_KEY)
-    hb_bytes = json.dumps(signed_hb, separators=(",", ":")).encode("utf-8")
+    cpp_exe = get_or_compile_cpp_binary()
 
-    pi_tracker = SequenceTracker()
-    pkt, err = parse_and_validate_packet(hb_bytes, SHARED_KEY, pi_tracker)
-    assert err is None
-    assert isinstance(pkt, HeartbeatPacket)
-    assert pkt.res_wet is True
-    assert pkt.pumps == [0, 1, 0, 0]
+    # Create one packet of each type in Python
+    nonce = 5555
+    python_packets = [
+        sign_packet_string(format_hb_unsigned(nonce, 1, 300, True, True, [0, 1, 0, 0], 0, -60), SHARED_KEY),
+        sign_packet_string(format_soil_unsigned(nonce, 2, 2, 2.155), SHARED_KEY),
+        sign_packet_string(format_flow_unsigned(nonce, 3, 1, 8, 1000), SHARED_KEY),
+        sign_packet_string(format_pump_unsigned(nonce, 4, 2, False, "done", 25), SHARED_KEY),
+        sign_packet_string(format_ack_unsigned(nonce, 5, "cmd-99", "ok", ""), SHARED_KEY),
+        sign_packet_string(format_cmd_unsigned(nonce, 6, "cmd-100", 3, 20), SHARED_KEY),
+        sign_packet_string(format_stop_unsigned(nonce, 7, "cmd-101", 3), SHARED_KEY),
+        sign_packet_string(format_stop_all_unsigned(nonce, 8, "cmd-102"), SHARED_KEY),
+    ]
 
-    # 2. Flow Delta
-    flow_dict = {
-        "v": "1.1",
-        "t": "flow",
-        "seq": 11,
-        "z": 1,
-        "pulses_delta": 18,
-    }
-    signed_flow = sign_packet(flow_dict, SHARED_KEY)
-    flow_bytes = json.dumps(signed_flow, separators=(",", ":")).encode("utf-8")
+    stdin_input = "".join(python_packets)
+    proc = subprocess.run(
+        [str(cpp_exe), "--verify", SHARED_KEY],
+        input=stdin_input,
+        capture_output=True,
+        text=True,
+        check=True
+    )
 
-    pkt_flow, err_flow = parse_and_validate_packet(flow_bytes, SHARED_KEY, pi_tracker)
-    assert err_flow is None
-    assert isinstance(pkt_flow, FlowPacket)
-    assert pkt_flow.z == 1
-    assert pkt_flow.pulses_delta == 18
-
-    # 3. Command Ack
-    ack_dict = {
-        "v": "1.1",
-        "t": "ack",
-        "seq": 12,
-        "id": "cmd-test-uuid-1234",
-        "status": "ok",
-    }
-    signed_ack = sign_packet(ack_dict, SHARED_KEY)
-    ack_bytes = json.dumps(signed_ack, separators=(",", ":")).encode("utf-8")
-
-    pkt_ack, err_ack = parse_and_validate_packet(ack_bytes, SHARED_KEY, pi_tracker)
-    assert err_ack is None
-    assert isinstance(pkt_ack, AckPacket)
-    assert pkt_ack.id == "cmd-test-uuid-1234"
-    assert pkt_ack.status == "ok"
+    results = [r.strip() for r in proc.stdout.splitlines() if r.strip()]
+    assert len(results) == len(python_packets)
+    for r in results:
+        assert r.startswith("OK "), f"C++ verification failed for Python packet: {r}"
 
 
-def test_signature_tampering_rejected():
-    """Verifies that modified payload or incorrect key is rejected."""
-    pkt_dict = {
-        "v": "1.1",
-        "t": "soil",
-        "seq": 5,
-        "z": 3,
-        "volts": 2.15,
-    }
-    signed = sign_packet(pkt_dict, SHARED_KEY)
+def test_signature_tampering_rejected_both_sides():
+    """Verifies that tampering with any character invalidates signature in Python and C++."""
+    cpp_exe = get_or_compile_cpp_binary()
 
+    valid_packet = sign_packet_string(format_soil_unsigned(1001, 1, 1, 1.500), SHARED_KEY)
     # Tamper with voltage
-    tampered = dict(signed)
-    tampered["volts"] = 1.05
-    tampered_bytes = json.dumps(tampered).encode("utf-8")
+    tampered_packet = valid_packet.replace('"volts":1.500', '"volts":2.500')
 
-    _, err = parse_and_validate_packet(tampered_bytes, SHARED_KEY)
-    assert err is not None
-    assert "signature mismatch" in err
+    # Python check
+    valid, _, _, err = verify_and_strip_sig(tampered_packet, SHARED_KEY)
+    assert valid is False
+    assert "mismatch" in err.lower()
 
-    # Wrong key
-    valid_bytes = json.dumps(signed).encode("utf-8")
-    _, err_key = parse_and_validate_packet(valid_bytes, "wrong-key")
-    assert err_key is not None
-    assert "signature mismatch" in err_key
+    # C++ check
+    proc = subprocess.run(
+        [str(cpp_exe), "--verify", SHARED_KEY],
+        input=tampered_packet,
+        capture_output=True,
+        text=True,
+        check=True
+    )
+    assert proc.stdout.strip() == "FAIL"
 
 
-def test_sequence_monotonicity_and_boot_reset():
-    """Verifies sequence numbers must strictly increase, but resets on new boot cycle."""
+def test_sequence_monotonicity_and_boot_nonce_reset():
+    """Verifies sequence rejection on replay and session reset on new boot nonce."""
     tracker = SequenceTracker()
 
-    # Initial packet seq=5, boot=1 -> OK
-    ok, err = tracker.validate_and_update(seq=5, boot=1)
+    # Session 1 (nonce 1001)
+    ok, err = tracker.validate_and_update(1, nonce=1001)
+    assert ok is True
+    assert err is None
+
+    ok, err = tracker.validate_and_update(2, nonce=1001)
     assert ok is True
 
-    # Next packet seq=6, boot=1 -> OK
-    ok, err = tracker.validate_and_update(seq=6, boot=1)
-    assert ok is True
-
-    # Replay packet seq=6, boot=1 -> Rejected
-    ok, err = tracker.validate_and_update(seq=6, boot=1)
+    # Replay sequence 2 -> rejected
+    ok, err = tracker.validate_and_update(2, nonce=1001)
     assert ok is False
-    assert "Replay or out-of-order" in err
+    assert "Replay" in err
 
-    # Out-of-order packet seq=4, boot=1 -> Rejected
-    ok, err = tracker.validate_and_update(seq=4, boot=1)
+    # Out of order sequence 1 -> rejected
+    ok, err = tracker.validate_and_update(1, nonce=1001)
     assert ok is False
 
-    # Node rebooted: boot=2, seq=0 -> Accepted!
-    ok, err = tracker.validate_and_update(seq=0, boot=2)
+    # Node reboots: new nonce 9999 -> accepted and sequence tracking resets to 1
+    ok, err = tracker.validate_and_update(1, nonce=9999)
     assert ok is True
-
-    # Next packet on boot=2
-    ok, err = tracker.validate_and_update(seq=1, boot=2)
-    assert ok is True
+    assert err is None

@@ -486,9 +486,15 @@
                 <button class="btn btn-secondary btn-sm" onclick="triggerZoneWater('zone_1', 15)">Water 15s</button>
                 <button class="btn btn-secondary btn-sm" onclick="stopZoneWater('zone_1')">Stop</button>
               </div>
-              <div style="margin-top: 8px; border-top: 1px solid #e2e8f0; padding-top: 6px;" class="flex gap-1">
-                <button class="btn btn-secondary btn-sm" style="font-size: 10px;" onclick="calibrateProbe('zone_1', 'dry')">Air (Dry)</button>
-                <button class="btn btn-secondary btn-sm" style="font-size: 10px;" onclick="calibrateProbe('zone_1', 'wet')">Water (Wet)</button>
+              <div style="margin-top: 8px; border-top: 1px solid #e2e8f0; padding-top: 6px;" class="flex flex-col gap-1">
+                <div class="flex gap-1">
+                  <button class="btn btn-secondary btn-sm" style="font-size: 10px;" onclick="calibrateProbe('zone_1', 'dry')">Air (Dry)</button>
+                  <button class="btn btn-secondary btn-sm" style="font-size: 10px;" onclick="calibrateProbe('zone_1', 'wet')">Water (Wet)</button>
+                </div>
+                <div style="margin-top: 4px;">
+                  <button class="btn btn-secondary btn-sm" id="btn-calibrate-flow" style="font-size: 10px; width: 100%;" onclick="calibrateFlow(1)">Calibrate Zone 1 Flow</button>
+                  <div id="flow-cal-result" style="font-size: 10px; margin-top: 4px; display: none;"></div>
+                </div>
               </div>
             </div>
 
@@ -951,6 +957,39 @@
           alert(data.detail || data.message);
         }
       } catch (e) { console.error(e); }
+    }
+
+    async function calibrateFlow(zone) {
+      const btn = document.getElementById("btn-calibrate-flow");
+      const resDiv = document.getElementById("flow-cal-result");
+      if (!btn || !resDiv) return;
+      if (!confirm("Run Zone 1 pump for 10s to calibrate flow meter?")) return;
+      btn.disabled = true;
+      btn.innerText = "Calibrating (10s)...";
+      resDiv.style.display = "block";
+      resDiv.innerText = "Running pump for 10s and measuring pulses...";
+      resDiv.style.color = "#0284c7";
+      try {
+        const res = await fetch("/api/flow/calibrate", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ zone: zone })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === "success") {
+          resDiv.innerText = `Flow: ${data.observed_flow_lpm} L/min (${data.observed_pulses_10s} pulses). Cutoff: ${data.flow_min_lpm} L/min. Saved!`;
+          resDiv.style.color = "#16a34a";
+        } else {
+          resDiv.innerText = data.warning || data.detail || "Calibration failed";
+          resDiv.style.color = "#dc2626";
+        }
+      } catch (err) {
+        resDiv.innerText = "Error: " + err;
+        resDiv.style.color = "#dc2626";
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "Calibrate Zone 1 Flow";
+      }
     }
 
     async function triggerEmergencyStop() {

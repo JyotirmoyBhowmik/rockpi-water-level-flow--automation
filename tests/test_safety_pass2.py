@@ -25,9 +25,7 @@ from app.core.security import security_manager, validate_webhook_url
 from app.core.state_manager import state_manager
 from app.core.watchdog import HealthMonitor
 from app.engine.failsafes import failsafe_engine
-from app.engine.motor_controller import motor_controller
-from app.hardware.audio_driver import VOICE_REGEX, ALSA_DEVICE_REGEX, VoiceAlertSynthesizer
-from app.hardware.gpio_driver import head_end_gpio
+from app.hardware.audio_driver import VOICE_REGEX, ALSA_DEVICE_REGEX
 from app.hardware.rtc import get_monotonic_now
 
 
@@ -60,6 +58,28 @@ def test_watchdog_health_gating_and_stall_detection():
     healthy, reason = hm.check_health()
     assert healthy is False
     assert "gateway_reader" in reason
+
+
+def test_systemd_ready_notification_sent():
+    """Verifies that notify_ready() transmits READY=1 on systemd NOTIFY_SOCKET (Part 1.2)."""
+    from app.core.watchdog import WatchdogGuardian
+
+    wg = WatchdogGuardian()
+    sent_payloads = []
+
+    class MockNotifySocket:
+        def sendto(self, msg, path):
+            sent_payloads.append((msg, path))
+
+    wg._notify_sock = MockNotifySocket()
+    wg._notify_path = "/run/systemd/notify"
+
+    res = wg.notify_ready()
+    assert res is True
+    assert len(sent_payloads) == 1
+    msg, path = sent_payloads[0]
+    assert b"READY=1" in msg
+    assert path == "/run/systemd/notify"
 
 
 # -----------------------------------------------------------------------------
@@ -277,3 +297,182 @@ async def test_flow_delta_pulse_accumulation():
     z1 = state_manager.get_state()["garden"]["zones"]["zone_1"]
     assert z1["flow_delta"] == 10
     assert z1["flow_pulses"] == 125
+
+
+# -----------------------------------------------------------------------------
+# 10. Per-Field Staleness Isolation (Part 4.1)
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_per_field_staleness_isolation(monkeypatch):
+    """
+    Part 4.1 Verification:
+      - Feed fresh heartbeat + stale soil for zone 2 -> zones 1, 3, 4 can water, zone 2 locked.
+      - Feed stale reservoir -> ALL pumps locked.
+      - Feed stale heartbeat -> Gateway state DEGRADED and alert raised.
+    """
+    monkeypatch.setattr("app.engine.failsafes.is_system_clock_valid", lambda: True)
+    now = time.time()
+
+    # 1. Setup fresh baseline
+    system_config.setup_complete = True
+    state_manager._state["garden"]["gateway_connected"] = True
+    state_manager._state["garden"]["node_online"] = True
+    state_manager._state["garden"]["is_stale"] = False
+    state_manager._state["garden"]["last_packet_ts"] = now
+    state_manager._state["garden"]["last_heartbeat_ts"] = now
+    state_manager._state["garden"]["reservoir_wet"] = True
+    state_manager._state["garden"]["reservoir_last_update_ts"] = now
+
+    for i in range(1, 5):
+        z_k = f"zone_{i}"
+        system_config.zones[z_k].enabled = True
+        system_config.zones[z_k].calibration.dry_v = 2.6
+        system_config.zones[z_k].calibration.wet_v = 1.2
+        system_config.zones[z_k].calibration.margin_v = 0.4
+        state_manager._state["garden"]["zones"][z_k]["voltage"] = 1.8
+        state_manager._state["garden"]["zones"][z_k]["last_update_ts"] = now
+        state_manager._state["garden"]["zones"][z_k]["cooldown_until_ts"] = 0.0
+
+    # Make Zone 2 soil probe reading stale (> 60s)
+    state_manager._state["garden"]["zones"]["zone_2"]["last_update_ts"] = now - 90.0
+
+    # Zones 1, 3, 4 must be able to water
+    ok1, _ = failsafe_engine.can_water_zone("zone_1", is_manual=False)
+    ok3, _ = failsafe_engine.can_water_zone("zone_3", is_manual=False)
+    ok4, _ = failsafe_engine.can_water_zone("zone_4", is_manual=False)
+    assert ok1 is True
+    assert ok3 is True
+    assert ok4 is True
+
+    # Zone 2 must be locked out due to stale soil
+    ok2, reason2 = failsafe_engine.can_water_zone("zone_2", is_manual=False)
+    assert ok2 is False
+    assert "zone_2' soil reading is STALE" in reason2
+
+    # Now make reservoir float reading stale (> 20s)
+    state_manager._state["garden"]["reservoir_last_update_ts"] = now - 35.0
+
+    # ALL zones must now be locked out
+    for i in range(1, 5):
+        ok, res_reason = failsafe_engine.can_water_zone(f"zone_{i}", is_manual=False)
+        assert ok is False
+        assert "reservoir float reading is STALE" in res_reason
+
+    # Restore reservoir, but make heartbeat stale (> 30s)
+    state_manager._state["garden"]["reservoir_last_update_ts"] = now
+    state_manager._state["garden"]["last_heartbeat_ts"] = now - 45.0
+    state_manager._state["garden"]["last_packet_ts"] = now - 45.0
+
+    ok_hb, hb_reason = failsafe_engine.can_water_zone("zone_1", is_manual=False)
+    assert ok_hb is False
+    assert "STALE or link lost" in hb_reason
+
+
+# -----------------------------------------------------------------------------
+# 11. Zero Default Keys Validation (Part 2.2)
+# -----------------------------------------------------------------------------
+def test_zero_default_keys_and_gateway_validation():
+    from pydantic import ValidationError
+    from app.config import SystemConfig
+
+    # Default system config has garden_gateway.enabled = False, shared_key = None
+    cfg = SystemConfig()
+    assert cfg.garden_gateway.enabled is False
+    assert cfg.garden_gateway.shared_key is None
+
+    # Enabling garden_gateway without a shared key MUST raise ValidationError
+    with pytest.raises(ValidationError) as exc_info:
+        SystemConfig(garden_gateway={"enabled": True, "shared_key": None})
+    assert "garden_gateway.shared_key is missing or empty" in str(exc_info.value)
+
+    # Empty string shared key MUST also fail
+    with pytest.raises(ValidationError) as exc_info:
+        SystemConfig(garden_gateway={"enabled": True, "shared_key": ""})
+    assert "garden_gateway.shared_key is missing or empty" in str(exc_info.value)
+
+
+# -----------------------------------------------------------------------------
+# 12. Flow Calibration Wizard (Part 4.2)
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_flow_calibration_wizard(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.engine.failsafes.is_system_clock_valid", lambda: True)
+    now = time.time()
+    state_manager._state["garden"]["gateway_connected"] = True
+    state_manager._state["garden"]["node_online"] = True
+    state_manager._state["garden"]["is_stale"] = False
+    state_manager._state["garden"]["last_heartbeat_ts"] = now
+    state_manager._state["garden"]["reservoir_wet"] = True
+    state_manager._state["garden"]["reservoir_last_update_ts"] = now
+
+    from app.hardware.gateway_driver import garden_gateway
+
+    # Mock gateway send_pump_run to simulate pulses arriving
+    async def mock_send_pump_run(zone, duration):
+        # Simulate pulses arriving in state
+        current = state_manager._state["garden"]["zones"]["zone_1"].get("flow_pulses", 0)
+        state_manager._state["garden"]["zones"]["zone_1"]["flow_pulses"] = current + 75
+        return "cmd-123"
+
+    monkeypatch.setattr(garden_gateway, "send_pump_run", mock_send_pump_run)
+    orig_sleep = asyncio.sleep
+    async def mock_sleep(s):
+        await orig_sleep(0.001)
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep)
+
+    app = create_app()
+    token = security_manager.rotate_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # 1. Normal calibration run (75 pulses in 10s = 1.0 L/min)
+        res = await client.post("/api/flow/calibrate", json={"zone": 1}, headers=headers)
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "success"
+        assert data["observed_pulses_10s"] == 75
+        assert data["observed_flow_lpm"] == 1.0
+        assert data["flow_min_lpm"] == 0.5  # 50% cutoff
+        assert data["min_pulses_10s"] == 38  # 50% of 75
+        assert data["saved"] is True
+
+        # 2. Low flow run (< 0.3 L/min, e.g. only 10 pulses)
+        async def mock_low_flow_run(zone, duration):
+            current = state_manager._state["garden"]["zones"]["zone_1"].get("flow_pulses", 0)
+            state_manager._state["garden"]["zones"]["zone_1"]["flow_pulses"] = current + 10
+            return "cmd-456"
+
+        monkeypatch.setattr(garden_gateway, "send_pump_run", mock_low_flow_run)
+        res_low = await client.post("/api/flow/calibrate", json={"zone": 1}, headers=headers)
+        assert res_low.status_code == 200
+        data_low = res_low.json()
+        assert data_low["status"] == "warning"
+        assert "Low flow or dry run detected" in data_low["warning"]
+        assert data_low["saved"] is False
+
+
+# -----------------------------------------------------------------------------
+# 13. Failed Signature Rate Limiting & Health Detail Metrics (Part 4.4)
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_failed_signature_rate_limiting_and_health_detail(tmp_path):
+    from app.hardware.gateway_driver import garden_gateway
+
+    garden_gateway.failed_sig_count = 0
+    garden_gateway._last_sig_warn_ts = 0.0
+
+    app = create_app()
+    token = security_manager.rotate_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Simulate 5 failed signature lines
+    garden_gateway.failed_sig_count += 5
+    garden_gateway.last_gw_err = {"err": "esp_now_send_error", "code": 12}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.get("/api/health/detail", headers=headers)
+        assert res.status_code == 200
+        data = res.json()
+        assert data["hardware"]["failed_sig_count"] == 5
+        assert data["hardware"]["last_gw_err"]["err"] == "esp_now_send_error"
+

@@ -7,7 +7,7 @@ import asyncio
 import logging
 import shutil
 import subprocess
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, status
 from app.config import save_config, system_config

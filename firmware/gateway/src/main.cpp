@@ -1,7 +1,7 @@
 /**
- * ESP32-C3 Super Mini - USB Serial to ESP-NOW Garden Gateway
- * Speaks JSON Lines v1 over USB CDC Serial (115200 baud).
- * Bridges commands to Wireless Garden Node via ESP-NOW.
+ * ESP32-C3 Super Mini - USB Serial to ESP-NOW Garden Gateway (Protocol v1.1)
+ * Speaks JSON Lines over USB CDC Serial (115200 baud).
+ * Bridges commands to Wireless Garden Node via Encrypted Unicast ESP-NOW.
  */
 
 #include <Arduino.h>
@@ -27,27 +27,61 @@ void blink_led(int ms = 20) {
     digitalWrite(LED_PIN, HIGH);
 }
 
+static inline bool is_broadcast_mac(const uint8_t mac[6]) {
+    for (int i = 0; i < 6; i++) {
+        if (mac[i] != 0xFF) return false;
+    }
+    return true;
+}
+
+static inline bool is_zero_mac(const uint8_t mac[6]) {
+    for (int i = 0; i < 6; i++) {
+        if (mac[i] != 0x00) return false;
+    }
+    return true;
+}
+
+static void load_16byte_key(const char *key_str, uint8_t out[16]) {
+    if (!key_str) return;
+    size_t len = strlen(key_str);
+    if (len == 32) {
+        for (int i = 0; i < 16; i++) {
+            char byte_buf[3] = { key_str[i * 2], key_str[i * 2 + 1], '\0' };
+            out[i] = (uint8_t)strtol(byte_buf, NULL, 16);
+        }
+    } else {
+        size_t n = len < 16 ? len : 16;
+        memcpy(out, key_str, n);
+    }
+}
+
 // Callback invoked when an ESP-NOW packet is received from the garden node
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 void on_esp_now_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
-    int8_t rssi = recv_info->rx_ctrl->rssi;
+    const uint8_t *src_mac = recv_info->src_addr;
 #else
 void on_esp_now_recv(const uint8_t *mac_addr, const uint8_t *data, int len) {
-    int8_t rssi = -60; // Approximate fallback if IDF < 5
+    const uint8_t *src_mac = mac_addr;
 #endif
     if (len <= 0 || len >= 512) {
         return;
     }
 
-    // Directly stream payload line to Serial to preserve signature
+    // Verify sender MAC matches configured unicast target node
+    if (memcmp(src_mac, TARGET_NODE_MAC, 6) != 0) {
+        return; // Drop packet from unauthenticated/foreign MAC
+    }
+
+    // Directly stream payload line to Serial to preserve exact bytes and signature
     Serial.write(data, len);
     Serial.println();
     blink_led(10);
 }
 
-// Callback invoked when ESP-NOW packet send completes
 void on_esp_now_send(const uint8_t *mac_addr, esp_now_send_status_t status) {
-    // Optional delivery logging or retry trigger
+    if (status != ESP_NOW_SEND_SUCCESS) {
+        Serial.println("{\"v\":1,\"t\":\"gw_err\",\"err\":\"esp_now_delivery_failed\"}");
+    }
 }
 
 void setup() {
@@ -60,35 +94,50 @@ void setup() {
         delay(10);
     }
 
+    // Validate unicast peer address
+    if (is_broadcast_mac(TARGET_NODE_MAC) || is_zero_mac(TARGET_NODE_MAC)) {
+        Serial.println("{\"v\":1,\"t\":\"gw_err\",\"err\":\"broadcast_mac_not_allowed\"}");
+        while (true) {
+            blink_led(50);
+            delay(500);
+        }
+    }
+
     // Initialize Wi-Fi in Station mode
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
 
     // Set Wi-Fi channel
-    esp_wifi_set_promiscuous(true, NULL);
+    esp_wifi_set_promiscuous(true);
     esp_wifi_set_channel(ESPNOW_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
-    esp_wifi_set_promiscuous(false, NULL);
+    esp_wifi_set_promiscuous(false);
 
     // Initialize ESP-NOW
     if (esp_now_init() != ESP_OK) {
-        Serial.println("{\"v\":1,\"err\":\"esp_now_init_failed\"}");
+        Serial.println("{\"v\":1,\"t\":\"gw_err\",\"err\":\"esp_now_init_failed\"}");
         return;
     }
+
+    // Set Primary Master Key (PMK)
+    uint8_t pmk_bytes[16] = {0};
+    load_16byte_key(ESPNOW_PMK, pmk_bytes);
+    esp_now_set_pmk(pmk_bytes);
 
     esp_now_register_recv_cb(on_esp_now_recv);
     esp_now_register_send_cb(on_esp_now_send);
 
-    // Add target peer (broadcast or unicast)
+    // Add target peer (Encrypted Unicast)
     memset(&peer_info, 0, sizeof(peer_info));
     memcpy(peer_info.peer_addr, TARGET_NODE_MAC, 6);
     peer_info.channel = ESPNOW_WIFI_CHANNEL;
-    peer_info.encrypt = false;
+    peer_info.encrypt = true;
+    load_16byte_key(ESPNOW_LMK, peer_info.lmk);
 
     if (esp_now_add_peer(&peer_info) != ESP_OK) {
-        Serial.println("{\"v\":1,\"err\":\"add_peer_failed\"}");
+        Serial.println("{\"v\":1,\"t\":\"gw_err\",\"err\":\"add_peer_failed\"}");
     }
 
-    // Initial gateway announce
+    // Gateway announce
     Serial.print("{\"v\":1,\"t\":\"gw_init\",\"channel\":");
     Serial.print(ESPNOW_WIFI_CHANNEL);
     Serial.println("}");
@@ -102,12 +151,9 @@ void loop() {
     // 1. Emit Gateway Heartbeat every 10 seconds
     if (now - last_gw_hb_ms >= GW_HEARTBEAT_INTERVAL_MS) {
         last_gw_hb_ms = now;
-        JsonDocument hb_doc;
-        hb_doc["v"] = 1;
-        hb_doc["t"] = "gw_hb";
-        hb_doc["uptime_s"] = now / 1000;
-        serializeJson(hb_doc, Serial);
-        Serial.println();
+        Serial.print("{\"v\":1,\"t\":\"gw_hb\",\"uptime_s\":");
+        Serial.print(now / 1000);
+        Serial.println("}");
     }
 
     // 2. Read JSON Lines commands from Host USB Serial (ROCK Pi S)
@@ -117,26 +163,19 @@ void loop() {
             if (serial_rx_idx > 0) {
                 serial_rx_buf[serial_rx_idx] = '\0';
 
-                // Validate incoming JSON
-                JsonDocument cmd_doc;
-                DeserializationError err = deserializeJson(cmd_doc, serial_rx_buf);
-                if (!err && cmd_doc["v"] == 1) {
-                    // Send packet to wireless node over ESP-NOW
-                    esp_err_t result = esp_now_send(
-                        TARGET_NODE_MAC,
-                        (const uint8_t *)serial_rx_buf,
-                        serial_rx_idx
-                    );
+                // Forward exact signed bytes to wireless node over ESP-NOW
+                esp_err_t result = esp_now_send(
+                    TARGET_NODE_MAC,
+                    (const uint8_t *)serial_rx_buf,
+                    serial_rx_idx
+                );
 
-                    if (result == ESP_OK) {
-                        blink_led(15);
-                    } else {
-                        Serial.print("{\"v\":1,\"err\":\"esp_now_send_error\",\"code\":");
-                        Serial.print((int)result);
-                        Serial.println("}");
-                    }
+                if (result == ESP_OK) {
+                    blink_led(15);
                 } else {
-                    Serial.println("{\"v\":1,\"err\":\"invalid_json_command\"}");
+                    Serial.print("{\"v\":1,\"t\":\"gw_err\",\"err\":\"esp_now_send_error\",\"code\":");
+                    Serial.print((int)result);
+                    Serial.println("}");
                 }
 
                 serial_rx_idx = 0;

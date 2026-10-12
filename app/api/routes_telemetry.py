@@ -8,10 +8,9 @@ import json
 import logging
 import os
 from pathlib import Path
-import tempfile
 from typing import Any, AsyncGenerator, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 from app.alerts.telegram_client import telegram_notifier
 from app.config import RUNTIME_DIR, system_config
@@ -234,6 +233,8 @@ async def get_health_detail() -> Dict[str, Any]:
             "gateway_serial_online": garden_gateway.is_link_online,
             "node_last_seen_ts": garden_gateway.node_last_seen,
             "gateway_last_seen_ts": garden_gateway.gateway_last_seen,
+            "failed_sig_count": garden_gateway.failed_sig_count,
+            "last_gw_err": garden_gateway.last_gw_err,
         },
         "system_status": state["system_status"],
         "setup_complete": system_config.setup_complete,

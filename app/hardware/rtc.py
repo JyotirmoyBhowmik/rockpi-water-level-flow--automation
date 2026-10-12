@@ -7,7 +7,6 @@ Uses install-time timestamp threshold written by install.sh.
 import logging
 import os
 import time
-from typing import Optional
 from app.config import system_config
 
 logger = logging.getLogger("smart_water.rtc")

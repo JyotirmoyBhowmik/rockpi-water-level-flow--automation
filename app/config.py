@@ -9,10 +9,8 @@ Honours SMART_WATER_DATA_DIR environment variable.
 import logging
 import os
 from pathlib import Path
-import stat
-import time
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator, SecretStr
 import yaml
 
 logger = logging.getLogger("smart_water.config")
@@ -80,10 +78,11 @@ class HeadEndConfig(BaseModel):
 
 
 class GardenGatewayConfig(BaseModel):
+    enabled: bool = Field(default=False, description="Enable ESP32 wireless garden gateway")
     serial_port: str = Field(default="/dev/garden-gateway", description="Path to USB serial device for ESP32 gateway")
     baud_rate: int = Field(default=115200, description="UART baud rate")
     link_loss_timeout_s: int = Field(default=30, ge=5, le=300, description="Seconds without packet before raising LINK LOST")
-    shared_key: str = Field(default="rockpi-garden-v1.1-key", description="HMAC-SHA256 shared secret key")
+    shared_key: Optional[SecretStr] = Field(default=None, description="HMAC-SHA256 shared secret key")
 
 
 class StaleThresholdsConfig(BaseModel):
@@ -92,6 +91,9 @@ class StaleThresholdsConfig(BaseModel):
     soil_s: int = Field(default=60, ge=10, le=300, description="Max age for individual soil probe reading")
     reservoir_s: int = Field(default=20, ge=5, le=120, description="Max age for reservoir float status")
     heartbeat_s: int = Field(default=30, ge=10, le=120, description="Max age for node heartbeat")
+    max_soil_age_s: int = Field(default=60, ge=10, le=300, description="Max age for individual soil probe reading")
+    max_reservoir_age_s: int = Field(default=20, ge=5, le=120, description="Max age for reservoir float status")
+    max_heartbeat_age_s: int = Field(default=30, ge=10, le=120, description="Max age for node heartbeat")
 
 
 class NetworkConfig(BaseModel):
@@ -199,6 +201,15 @@ class SystemConfig(BaseModel):
                 "Specify your Tailscale/Headscale IP or 127.0.0.1 in /etc/smart-water/config.yaml"
             )
         return v
+
+    @model_validator(mode="after")
+    def validate_gateway_secrets(self) -> "SystemConfig":
+        if self.garden_gateway.enabled and (not self.garden_gateway.shared_key or not self.garden_gateway.shared_key.get_secret_value()):
+            raise ValueError(
+                "garden_gateway.enabled is true but garden_gateway.shared_key is missing or empty. "
+                "Run 'python -m app.cli gen-espnow-secrets' and configure shared_key in /var/lib/smart-water/settings.yaml"
+            )
+        return self
 
     def is_relay_polarity_safe(self) -> bool:
         """Enforces that active-low relay must have confirmed pull-up idle bias."""

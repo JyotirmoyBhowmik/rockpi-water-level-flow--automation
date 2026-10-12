@@ -3,13 +3,11 @@ Non-Bypassable Hardcoded Failsafes and Interlock Logic for Radxa ROCK Pi S Contr
 Enforces hardware interlock chain cause logic, motor protection, and plant irrigation guards.
 """
 
-import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from app.alerts.telegram_client import telegram_notifier
 from app.config import system_config
-from app.core.event_bus import bus
 from app.core.state_manager import state_manager
 from app.hardware.audio_driver import audio_controller
 from app.hardware.gateway_driver import garden_gateway
@@ -255,11 +253,21 @@ class FailsafeSafetyEngine:
         g = state["garden"]
         now = time.time()
 
-        # Gateway & Staleness Check
-        if not g["gateway_connected"] or not g["node_online"] or g["is_stale"]:
-            return False, "Garden node telemetry is STALE or link lost (>90s). Plant watering locked."
+        # 1. Gateway & Heartbeat Staleness Check (Part 4.1)
+        max_hb_age = getattr(system_config.stale_thresholds, "max_heartbeat_age_s", system_config.stale_thresholds.heartbeat_s)
+        last_hb = g.get("last_heartbeat_ts") or g.get("last_packet_ts") or g.get("gateway_last_seen") or g.get("node_last_seen")
+        is_hb_stale = g.get("is_stale", False) or (last_hb is not None and (now - last_hb) > max_hb_age)
+        if not g.get("gateway_connected") or not g.get("node_online") or is_hb_stale:
+            hb_age = int(now - last_hb) if last_hb else 999999
+            return False, f"Garden node telemetry is STALE or link lost (heartbeat {hb_age}s > {max_hb_age}s limit). Plant watering locked."
 
-        # Reservoir Empty Check
+        # 2. Reservoir Float Staleness & Dry Check (Part 4.1: stale reservoir locks ALL pumps)
+        max_res_age = getattr(system_config.stale_thresholds, "max_reservoir_age_s", system_config.stale_thresholds.reservoir_s)
+        res_ts = g.get("reservoir_last_update_ts")
+        if res_ts is not None and (now - res_ts) > max_res_age:
+            res_age = int(now - res_ts)
+            return False, f"Irrigation reservoir float reading is STALE ({res_age}s > {max_res_age}s limit). ALL pumps locked."
+
         if g.get("reservoir_wet") is not True:
             return False, "Irrigation reservoir is dry. DC pumps locked."
 
@@ -283,8 +291,15 @@ class FailsafeSafetyEngine:
         if cal.dry_v is None or cal.wet_v is None:
             return False, f"Zone '{zone_key}' probe is uncalibrated. Auto-watering disallowed."
 
-        # Probe Sanity Band Check
+        # Probe Sanity Band & Staleness Check (Part 4.1: stale soil locks ONLY that zone's auto-watering)
         z_state = g["zones"].get(zone_key, {})
+        max_soil_age = getattr(system_config.stale_thresholds, "max_soil_age_s", system_config.stale_thresholds.soil_s)
+        z_last_ts = z_state.get("last_update_ts")
+        if not is_manual:
+            if z_last_ts is None or (now - z_last_ts) > max_soil_age:
+                soil_age = int(now - z_last_ts) if z_last_ts else 999999
+                return False, f"Zone '{zone_key}' soil reading is STALE ({soil_age}s > {max_soil_age}s limit). Auto-watering locked."
+
         volts = z_state.get("voltage")
         if volts is not None:
             min_valid = min(cal.wet_v, cal.dry_v) - cal.margin_v

@@ -25,7 +25,7 @@ garden_gateway:
   serial_port: "/dev/garden-gateway" # Created by udev rule
   baud_rate: 115200
   link_loss_timeout_s: 30          # Threshold before raising LINK LOST alert
-  shared_key: "rockpi-garden-v1.1-key" # HMAC-SHA256 shared secret key
+  shared_key: null                 # HMAC-SHA256 shared key (generate via: python -m app.cli gen-espnow-secrets)
 
 # Stale Data Timeouts (Stale data = unsafe data -> lock dependent actuators)
 stale_thresholds:

@@ -3,8 +3,9 @@ Actuator Control Endpoints: Motor, Plant Drip Zones, Probe Calibration, Emergenc
 All actions strictly validated against hardware interlocks and safety policies.
 """
 
+import asyncio
 import logging
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Literal
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, status
 from app.config import save_config, system_config
@@ -32,6 +33,10 @@ class ZoneWaterRequest(BaseModel):
 
 class ZoneCalibrateRequest(BaseModel):
     step: Literal["dry", "wet"] = Field(..., description="Calibration step: 'dry' in air, 'wet' in water")
+
+
+class FlowCalibrateRequest(BaseModel):
+    zone: int = Field(default=1, ge=1, le=4, description="Zone number to calibrate flow for (default Zone 1)")
 
 
 class VoiceTestRequest(BaseModel):
@@ -146,6 +151,99 @@ async def calibrate_zone_probe(zone_id: str, payload: ZoneCalibrateRequest) -> D
         "captured_volts": current_v,
         "dry_v": z_cfg.calibration.dry_v,
         "wet_v": z_cfg.calibration.wet_v,
+    }
+
+
+@router.post("/flow/calibrate")
+async def calibrate_zone_flow(payload: FlowCalibrateRequest) -> Dict[str, Any]:
+    """
+    Flow calibration wizard (Part 4.2):
+    1. Runs requested zone pump for 10s.
+    2. Measures flow meter pulse delta over that period.
+    3. Computes observed flow (L/min) and pulses/L.
+    4. Minimum flow cutoff: sets flow_min_lpm to 50% of observed flow.
+       If observed flow < 0.3 L/min, raises warning and does NOT save calibration.
+    """
+    zone_idx = payload.zone
+    z_key = f"zone_{zone_idx}"
+    can_water, err_msg = failsafe_engine.can_water_zone(z_key, is_manual=True)
+    if not can_water:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot run flow calibration for {z_key}: {err_msg}",
+        )
+
+    # Initial pulses
+    state = state_manager.get_state()
+    initial_pulses = state["garden"]["zones"].get(z_key, {}).get("flow_pulses", 0)
+
+    # Start pump for 10s via gateway
+    try:
+        from app.hardware.gateway_driver import garden_gateway
+        await garden_gateway.send_pump_run(zone_idx, 10)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start pump for flow calibration: {exc}",
+        )
+
+    # Wait for 10s pump run plus telemetry interval
+    await asyncio.sleep(10.5)
+
+    # Measure final pulses
+    state_after = state_manager.get_state()
+    final_pulses = state_after["garden"]["zones"].get(z_key, {}).get("flow_pulses", 0)
+    observed_pulses = max(0, final_pulses - initial_pulses)
+
+    # Compute flow (YF-S201 nominal 7.5 Hz per L/min -> 75 pulses in 10s per L/min)
+    observed_flow_lpm = observed_pulses / 75.0
+    pulses_per_l = 450.0
+
+    if observed_flow_lpm < 0.3:
+        warning_msg = "Low flow or dry run detected during calibration"
+        logger.warning(
+            "Zone %d flow calibration failed sanity check: %.2f L/min (< 0.3 L/min). Pulses: %d",
+            zone_idx,
+            observed_flow_lpm,
+            observed_pulses,
+        )
+        return {
+            "status": "warning",
+            "zone": zone_idx,
+            "observed_pulses_10s": observed_pulses,
+            "observed_flow_lpm": round(observed_flow_lpm, 3),
+            "pulses_per_liter": pulses_per_l,
+            "warning": warning_msg,
+            "saved": False,
+        }
+
+    # Minimum cutoff: 50% of observed flow
+    flow_min_lpm = round(0.5 * observed_flow_lpm, 3)
+    min_pulses_10s = max(1, int(round(0.5 * observed_pulses)))
+
+    # Persist in configuration
+    z_cfg = system_config.zones.get(z_key)
+    if z_cfg:
+        z_cfg.has_flow_meter = True
+        z_cfg.min_pulses_10s = min_pulses_10s
+        save_config(system_config)
+
+    log_msg = (
+        f"Zone {zone_idx} flow calibrated: {observed_flow_lpm:.2f} L/min "
+        f"({observed_pulses} pulses in 10s). Cutoff set to {flow_min_lpm:.2f} L/min ({min_pulses_10s} pulses/10s)."
+    )
+    logger.info(log_msg)
+    await state_manager.log_event("FLOW_CALIBRATED", "INFO", log_msg)
+
+    return {
+        "status": "success",
+        "zone": zone_idx,
+        "observed_pulses_10s": observed_pulses,
+        "observed_flow_lpm": round(observed_flow_lpm, 3),
+        "flow_min_lpm": flow_min_lpm,
+        "min_pulses_10s": min_pulses_10s,
+        "pulses_per_liter": pulses_per_l,
+        "saved": True,
     }
 
 

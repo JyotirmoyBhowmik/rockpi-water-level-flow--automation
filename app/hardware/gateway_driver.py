@@ -20,15 +20,11 @@ from app.core.event_bus import bus
 from app.core.watchdog import health_monitor
 from app.hardware.protocol import (
     AckPacket,
-    CommandPacket,
-    FlowPacket,
-    HeartbeatPacket,
+    GatewayErrPacket,
+    GatewayHbPacket,
+    GatewayInitPacket,
     PacketModel,
     SequenceTracker,
-    SoilPacket,
-    StopAllPacket,
-    StopPacket,
-    compute_packet_signature,
     parse_and_validate_packet,
     sign_packet,
 )
@@ -66,6 +62,9 @@ class GardenGatewayDriver:
         self._seq_tracker = SequenceTracker()
         self._pending_acks: Dict[str, asyncio.Future] = {}
         self._on_packet_callback: Optional[Callable[[PacketModel], Coroutine[Any, Any, None]]] = None
+        self.failed_sig_count: int = 0
+        self._last_sig_warn_ts: float = 0.0
+        self.last_gw_err: Optional[Dict[str, Any]] = None
 
     @property
     def is_link_online(self) -> bool:
@@ -115,7 +114,8 @@ class GardenGatewayDriver:
 
     async def _write_packet(self, pkt_dict: Dict[str, Any]) -> bool:
         """Signs and writes a packet dict as a single JSON line."""
-        key = system_config.garden_gateway.shared_key
+        shared_key_obj = system_config.garden_gateway.shared_key
+        key = shared_key_obj.get_secret_value() if hasattr(shared_key_obj, "get_secret_value") else (shared_key_obj or "")
         signed_pkt = sign_packet(pkt_dict, key)
         line = json.dumps(signed_pkt, separators=(",", ":")) + "\n"
         encoded = line.encode("utf-8")
@@ -215,7 +215,8 @@ class GardenGatewayDriver:
         """Worker loop maintaining connection and decoding JSON Lines."""
         port_path = system_config.garden_gateway.serial_port
         baud = system_config.garden_gateway.baud_rate
-        key = system_config.garden_gateway.shared_key
+        shared_key_obj = system_config.garden_gateway.shared_key
+        key = shared_key_obj.get_secret_value() if hasattr(shared_key_obj, "get_secret_value") else (shared_key_obj or "")
 
         while self._running:
             # Report loop liveness to HealthMonitor (Part 2.1)
@@ -270,10 +271,29 @@ class GardenGatewayDriver:
                     self._gateway_last_seen = now
                     pkt, err = parse_and_validate_packet(line_bytes, key, self._seq_tracker)
                     if err:
-                        logger.debug("Packet validation rejected: %s", err)
+                        if "sig" in err.lower() or "signature" in err.lower():
+                            self.failed_sig_count += 1
+                            if (now - self._last_sig_warn_ts) >= 30.0:
+                                self._last_sig_warn_ts = now
+                                logger.warning(
+                                    "Signature verification failed on incoming line: %s (total: %d)",
+                                    err,
+                                    self.failed_sig_count,
+                                )
+                        else:
+                            logger.debug("Packet validation rejected: %s", err)
                         continue
 
                     if not pkt:
+                        continue
+
+                    # Handle gateway status messages vs forwarded node packets (Part 4.4)
+                    if isinstance(pkt, GatewayErrPacket):
+                        self.last_gw_err = pkt.model_dump()
+                        logger.warning("Gateway reported internal error: %s", self.last_gw_err)
+                        continue
+                    elif isinstance(pkt, (GatewayHbPacket, GatewayInitPacket)):
+                        self._gateway_last_seen = now
                         continue
 
                     # Node packet accepted and verified

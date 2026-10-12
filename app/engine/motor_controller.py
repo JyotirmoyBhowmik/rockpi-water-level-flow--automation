@@ -6,7 +6,6 @@ Enforces automatic replenishment, hardware interlock checks, and run logging.
 import asyncio
 from datetime import datetime, timezone
 import logging
-import time
 from typing import Optional, Tuple
 from app.alerts.telegram_client import telegram_notifier
 from app.config import system_config
