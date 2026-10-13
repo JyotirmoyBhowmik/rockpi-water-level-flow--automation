@@ -34,6 +34,12 @@ async def get_system_configuration() -> Dict[str, Any]:
     cfg = system_config.model_dump(mode="json")
     if cfg.get("telegram") and cfg["telegram"].get("bot_token"):
         cfg["telegram"]["bot_token"] = "********"
+    if cfg.get("garden_gateway") and cfg["garden_gateway"].get("shared_key"):
+        cfg["garden_gateway"]["shared_key"] = "********"
+    if cfg.get("ntfy") and cfg["ntfy"].get("access_token"):
+        cfg["ntfy"]["access_token"] = "********"
+    if cfg.get("mqtt") and cfg["mqtt"].get("password"):
+        cfg["mqtt"]["password"] = "********"
     return cfg
 
 
@@ -41,12 +47,33 @@ async def get_system_configuration() -> Dict[str, Any]:
 async def update_system_configuration(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Updates system configuration in memory and saves to YAML settings."""
     try:
-        # Preserve telegram token if masked
-        if payload.get("telegram") and payload["telegram"].get("bot_token") == "********":
+        # Preserve sensitive tokens if masked with asterisks
+        if payload.get("telegram") and str(payload["telegram"].get("bot_token", "")).startswith("***"):
             payload["telegram"]["bot_token"] = system_config.telegram.bot_token
 
+        if payload.get("garden_gateway") and str(payload["garden_gateway"].get("shared_key", "")).startswith("***"):
+            payload["garden_gateway"]["shared_key"] = (
+                system_config.garden_gateway.shared_key.get_secret_value()
+                if hasattr(system_config.garden_gateway.shared_key, "get_secret_value")
+                else system_config.garden_gateway.shared_key
+            )
+
+        if payload.get("ntfy") and str(payload["ntfy"].get("access_token", "")).startswith("***"):
+            payload["ntfy"]["access_token"] = (
+                system_config.ntfy.access_token.get_secret_value()
+                if hasattr(system_config.ntfy.access_token, "get_secret_value")
+                else system_config.ntfy.access_token
+            )
+
+        if payload.get("mqtt") and str(payload["mqtt"].get("password", "")).startswith("***"):
+            payload["mqtt"]["password"] = (
+                system_config.mqtt.password.get_secret_value()
+                if hasattr(system_config.mqtt.password, "get_secret_value")
+                else system_config.mqtt.password
+            )
+
         updated = system_config.model_validate(payload)
-        
+
         # Check if hardware pin or polarity changes require system restart (Part 1.2)
         from app.config import check_if_restart_required
         restart_req = check_if_restart_required(updated.head_end)
@@ -61,10 +88,14 @@ async def update_system_configuration(payload: Dict[str, Any]) -> Dict[str, Any]
         return {
             "status": "success",
             "restart_required": system_config.restart_required,
-            "message": "Configuration saved." + (" Restart required to apply pin/polarity changes." if system_config.restart_required else ""),
+            "message": (
+                "Configuration saved successfully."
+                + (" Restart required (sudo systemctl restart smart-water) to re-bind GPIO pins." if system_config.restart_required else "")
+            ),
         }
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
 
 
 @router.get("/gpioinfo")

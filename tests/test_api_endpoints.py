@@ -139,3 +139,42 @@ async def test_emergency_stop_and_reset_endpoints(auth_credentials):
         assert res_reset.status_code == 200
         assert res_reset.json()["status"] == "success"
         assert failsafe_engine.manual_motor_lockout is False
+
+
+@pytest.mark.asyncio
+async def test_config_endpoints_and_secret_preservation(auth_credentials, tmp_path):
+    _, headers = auth_credentials
+    from pydantic import SecretStr
+
+    # Configure sample secrets
+    system_config.telegram.bot_token = "123456:SECRET_BOT_TOKEN"
+    system_config.garden_gateway.shared_key = SecretStr("abcdef0123456789abcdef0123456789")
+    system_config.ntfy.access_token = SecretStr("tk_secret_access_token")
+    system_config.mqtt.password = SecretStr("mqtt_secret_password")
+
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # 1. GET /api/config redacts all secrets
+        res = await client.get("/api/config", headers=headers)
+        assert res.status_code == 200
+        cfg_data = res.json()
+        assert cfg_data["telegram"]["bot_token"] == "********"
+        assert cfg_data["garden_gateway"]["shared_key"] == "********"
+        assert cfg_data["ntfy"]["access_token"] == "********"
+        assert cfg_data["mqtt"]["password"] == "********"
+
+        # 2. Modify non-secret fields and post back with masked asterisks
+        cfg_data["motor"]["max_runtime_s"] = 850
+        cfg_data["head_end"]["debounce_ms"] = 150
+        res_post = await client.post("/api/config", json=cfg_data, headers=headers)
+        assert res_post.status_code == 200
+        assert res_post.json()["status"] == "success"
+
+        # 3. Confirm secrets were NOT overwritten with asterisks
+        assert system_config.telegram.bot_token == "123456:SECRET_BOT_TOKEN"
+        assert system_config.garden_gateway.shared_key.get_secret_value() == "abcdef0123456789abcdef0123456789"
+        assert system_config.ntfy.access_token.get_secret_value() == "tk_secret_access_token"
+        assert system_config.mqtt.password.get_secret_value() == "mqtt_secret_password"
+        assert system_config.motor.max_runtime_s == 850
+        assert system_config.head_end.debounce_ms == 150
+

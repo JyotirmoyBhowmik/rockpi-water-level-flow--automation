@@ -551,31 +551,53 @@ def save_settings(cfg: SystemConfig) -> bool:
     settings_file = get_settings_path()
     temp_file = settings_file.with_suffix(".tmp")
 
-    # Extract UI-editable subset
-    if isinstance(cfg.garden_gateway.shared_key, str):
-        cfg.garden_gateway.shared_key = SecretStr(cfg.garden_gateway.shared_key)
-    if isinstance(cfg.ntfy.access_token, str):
-        cfg.ntfy.access_token = SecretStr(cfg.ntfy.access_token)
-    if isinstance(cfg.mqtt.password, str):
-        cfg.mqtt.password = SecretStr(cfg.mqtt.password)
+    # Extract UI-editable subset with unmasked secrets for local mode 0600 file
+    gw_data = cfg.garden_gateway.model_dump(mode="json")
+    if cfg.garden_gateway.shared_key:
+        gw_data["shared_key"] = (
+            cfg.garden_gateway.shared_key.get_secret_value()
+            if hasattr(cfg.garden_gateway.shared_key, "get_secret_value")
+            else str(cfg.garden_gateway.shared_key)
+        )
+
+    ntfy_data = cfg.ntfy.model_dump(mode="json")
+    if cfg.ntfy.access_token:
+        ntfy_data["access_token"] = (
+            cfg.ntfy.access_token.get_secret_value()
+            if hasattr(cfg.ntfy.access_token, "get_secret_value")
+            else str(cfg.ntfy.access_token)
+        )
+
+    mqtt_data = cfg.mqtt.model_dump(mode="json")
+    if cfg.mqtt.password:
+        mqtt_data["password"] = (
+            cfg.mqtt.password.get_secret_value()
+            if hasattr(cfg.mqtt.password, "get_secret_value")
+            else str(cfg.mqtt.password)
+        )
 
     payload = {
         "head_end": cfg.head_end.model_dump(mode="json"),
         "motor": cfg.motor.model_dump(mode="json"),
         "zones": {k: v.model_dump(mode="json") for k, v in cfg.zones.items()},
-        "garden_gateway": cfg.garden_gateway.model_dump(mode="json"),
+        "garden_gateway": gw_data,
         "power_meter": cfg.power_meter.model_dump(mode="json"),
         "level_sensor": cfg.level_sensor.model_dump(mode="json"),
         "weather": cfg.weather.model_dump(mode="json"),
+        "audio": cfg.audio.model_dump(mode="json"),
         "buzzer": cfg.buzzer.model_dump(mode="json"),
         "display": cfg.display.model_dump(mode="json"),
         "telegram": cfg.telegram.model_dump(mode="json"),
-        "ntfy": cfg.ntfy.model_dump(mode="json"),
-        "mqtt": cfg.mqtt.model_dump(mode="json"),
+        "ntfy": ntfy_data,
+        "mqtt": mqtt_data,
+        "database": cfg.database.model_dump(mode="json"),
+        "stale_thresholds": cfg.stale_thresholds.model_dump(mode="json"),
+        "watchdog": cfg.watchdog.model_dump(mode="json"),
         "setup_complete": cfg.setup_complete,
         "setup_checks": cfg.setup_checks.model_dump(mode="json"),
         "restart_required": cfg.restart_required,
     }
+
 
     try:
         settings_file.parent.mkdir(parents=True, exist_ok=True)

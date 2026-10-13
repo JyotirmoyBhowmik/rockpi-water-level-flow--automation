@@ -44,6 +44,10 @@ function switchTab(tabId, btn) {
   if (tabId === "tab-history") {
     fetchHistoricalCharts(currentChartWindow);
   }
+  if (tabId === "tab-settings") {
+    loadSettingsForm();
+  }
+
 }
 
 function saveTokenToBrowser() {
@@ -564,19 +568,347 @@ async function fetchEventJournal() {
   }
 }
 
-async function loadSettingsYaml() {
+let rawConfigCache = null;
+
+async function loadSettingsForm() {
   try {
     const res = await fetch("/api/config", { headers: getAuthHeaders() });
+    if (!res.ok) {
+      console.error("Failed to fetch /api/config", res.status);
+      return;
+    }
     const data = await res.json();
+    rawConfigCache = data;
+
+    // Update raw JSON preview
     const preview = document.getElementById("settings-yaml-preview");
     if (preview) preview.textContent = JSON.stringify(data, null, 2);
+
+    // Section 1: Head-End Hardware & GPIO Pins
+    const he = data.head_end || {};
+    const setVal = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.value = val !== null && val !== undefined ? val : "";
+    };
+    const setChk = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.checked = Boolean(val);
+    };
+
+    setVal("cfg-he-chip", he.chip_path || "");
+    setVal("cfg-he-debounce-ms", he.debounce_ms ?? 100);
+    setVal("cfg-he-relay-idle-bias", he.relay_idle_bias_confirmed || "");
+    setVal("cfg-he-tank-low-pin", he.tank_low_float_pin);
+    setChk("cfg-he-tank-low-pol", he.tank_low_active_low ?? true);
+    setVal("cfg-he-interlock-out-pin", he.interlock_out_pin);
+    setChk("cfg-he-interlock-out-pol", he.interlock_out_active_low ?? true);
+    setVal("cfg-he-interlock-mid-pin", he.interlock_mid_pin);
+    setChk("cfg-he-interlock-mid-pol", he.interlock_mid_active_low ?? true);
+    setVal("cfg-he-leak-pin", he.leak_sensor_pin);
+    setChk("cfg-he-leak-pol", he.leak_active_low ?? true);
+    setVal("cfg-he-relay-pin", he.contactor_relay_pin);
+    setChk("cfg-he-relay-active-high", he.contactor_relay_active_high ?? true);
+    setVal("cfg-he-feedback-pin", he.contactor_feedback_pin);
+    setChk("cfg-he-feedback-pol", he.feedback_active_low ?? true);
+
+    // Section 2: Motor Protection
+    const m = data.motor || {};
+    setChk("cfg-motor-auto-mode", m.auto_mode ?? false);
+    setVal("cfg-motor-max-runtime-s", m.max_runtime_s ?? 900);
+    setVal("cfg-motor-cooldown-s", m.cooldown_s ?? 1800);
+    setVal("cfg-motor-min-off-time-s", m.min_off_time_s ?? 120);
+    setVal("cfg-motor-pull-in-ms", m.pull_in_timeout_ms ?? 1000);
+    setVal("cfg-motor-drop-out-ms", m.drop_out_timeout_ms ?? 1000);
+
+    // Section 3: Power Meter & Tank Level
+    const pm = data.power_meter || {};
+    setChk("cfg-pm-enabled", pm.enabled ?? false);
+    setVal("cfg-pm-sensor-type", pm.sensor_type || "none");
+    setVal("cfg-pm-serial-port", pm.serial_port || "/dev/pzem");
+    setVal("cfg-pm-voltage-min", pm.voltage_min_v ?? 180.0);
+    setVal("cfg-pm-voltage-max", pm.voltage_max_v ?? 260.0);
+    setVal("cfg-pm-dry-run-pct", pm.dry_run_current_pct ?? 65.0);
+    setVal("cfg-pm-overload-pct", pm.overload_current_pct ?? 135.0);
+    setVal("cfg-pm-baseline-a", pm.baseline_current_a);
+    setVal("cfg-pm-inrush-s", pm.inrush_blanking_s ?? 3.0);
+
+    const lvl = data.level_sensor || {};
+    setChk("cfg-lvl-enabled", lvl.enabled ?? false);
+    setVal("cfg-lvl-sensor-type", lvl.sensor_type || "none");
+    setVal("cfg-lvl-tank-height", lvl.tank_height_cm ?? 150.0);
+    setVal("cfg-lvl-tank-diam", lvl.tank_diameter_cm ?? 100.0);
+    setVal("cfg-lvl-offset", lvl.sensor_offset_cm ?? 20.0);
+    setChk("cfg-lvl-predictive-stop", lvl.predictive_stop_enabled ?? true);
+    setVal("cfg-lvl-stop-pct", lvl.predictive_stop_pct ?? 95.0);
+    setChk("cfg-lvl-night-leak", lvl.night_leak_detection_enabled ?? true);
+    setVal("cfg-lvl-night-leak-drop", lvl.night_leak_max_drop_litres ?? 15.0);
+
+    // Section 4: Garden Gateway
+    const gw = data.garden_gateway || {};
+    setChk("cfg-gw-enabled", gw.enabled ?? false);
+    setVal("cfg-gw-serial-port", gw.serial_port || "/dev/garden-gateway");
+    setVal("cfg-gw-baud-rate", gw.baud_rate ?? 115200);
+    setVal("cfg-gw-timeout-s", gw.link_loss_timeout_s ?? 30);
+    setVal("cfg-gw-shared-key", gw.shared_key || "");
+
+    // Section 5: Zones (1 to 4)
+    const zones = data.zones || {};
+    for (let i = 1; i <= 4; i++) {
+      const z = zones[`zone_${i}`] || {};
+      setChk(`cfg-z${i}-enabled`, z.enabled ?? false);
+      setVal(`cfg-z${i}-name`, z.name || `Zone ${i}`);
+      setVal(`cfg-z${i}-threshold`, z.soil_dry_threshold_pct ?? 35.0);
+      setVal(`cfg-z${i}-pulse-s`, z.pulse_seconds ?? 15);
+      setVal(`cfg-z${i}-cooldown-h`, z.cooldown_hours ?? 6.0);
+      if (i === 1) setChk("cfg-z1-has-flow", z.has_flow_meter ?? false);
+    }
+
+    // Section 6: Alerts & Notifications
+    const tg = data.telegram || {};
+    setChk("cfg-tg-enabled", tg.enabled ?? false);
+    setVal("cfg-tg-token", tg.bot_token || "");
+    setVal("cfg-tg-chat-id", tg.chat_id || "");
+
+    const ntfy = data.ntfy || {};
+    setChk("cfg-ntfy-enabled", ntfy.enabled ?? false);
+    setVal("cfg-ntfy-url", ntfy.server_url || "https://ntfy.sh");
+    setVal("cfg-ntfy-topic", ntfy.topic || "");
+    setVal("cfg-ntfy-token", ntfy.access_token || "");
+
+    const mqttCfg = data.mqtt || {};
+    setChk("cfg-mqtt-enabled", mqttCfg.enabled ?? false);
+    setVal("cfg-mqtt-host", mqttCfg.broker_host || "127.0.0.1");
+    setVal("cfg-mqtt-port", mqttCfg.broker_port ?? 1883);
+    setVal("cfg-mqtt-user", mqttCfg.username || "");
+    setVal("cfg-mqtt-pass", mqttCfg.password || "");
+    setChk("cfg-mqtt-ha", mqttCfg.ha_discovery_enabled ?? true);
+
+    // Section 7: Weather
+    const wx = data.weather || {};
+    setChk("cfg-wx-enabled", wx.enabled ?? false);
+    setVal("cfg-wx-lat", wx.latitude ?? 0.0);
+    setVal("cfg-wx-lon", wx.longitude ?? 0.0);
+    setVal("cfg-wx-rain-prob", wx.rain_prob_threshold_pct ?? 60.0);
+    setVal("cfg-wx-past-rain", wx.past_rain_threshold_mm ?? 5.0);
+
+    // Section 8: Audio, Display, Database & System Limits
+    const aud = data.audio || {};
+    setChk("cfg-audio-enabled", aud.enabled ?? true);
+    setVal("cfg-audio-device", aud.alsa_device || "default");
+
+    const buz = data.buzzer || {};
+    setChk("cfg-buzzer-enabled", buz.enabled ?? false);
+    setVal("cfg-buzzer-pin", buz.gpio_pin);
+
+    const disp = data.display || {};
+    setChk("cfg-disp-enabled", disp.enabled ?? false);
+    setVal("cfg-disp-i2c-bus", disp.i2c_bus ?? 7);
+    setVal("cfg-disp-rotate", disp.rotate ?? 0);
+
+    const db = data.database || {};
+    setVal("cfg-db-retention", db.retention_days ?? 90);
+    setVal("cfg-db-cache-kb", db.cache_size_kb ?? -2000);
+    setVal("cfg-db-backup-retention", db.backup_retention_days ?? 7);
+    setVal("cfg-sys-ram-mb", 128);
+
+    // Restart banner visibility
+    const restartBanner = document.getElementById("settings-restart-banner");
+    if (restartBanner) {
+      restartBanner.style.display = data.restart_required ? "block" : "none";
+    }
   } catch (e) {
-    console.error(e);
+    console.error("Error loading settings form:", e);
   }
 }
 
-function saveSettingsForm() {
-  alert("Configuration file is managed on host at /etc/smart-water/config.yaml.");
+async function saveSettingsForm() {
+  const statusBanner = document.getElementById("settings-status-banner");
+  if (statusBanner) {
+    statusBanner.style.display = "block";
+    statusBanner.style.background = "#eff6ff";
+    statusBanner.style.color = "#1d4ed8";
+    statusBanner.textContent = "⏳ Saving and validating configuration...";
+  }
+
+  try {
+    const payload = JSON.parse(JSON.stringify(rawConfigCache || {}));
+
+    const getVal = (id) => document.getElementById(id)?.value?.trim() || "";
+    const getNum = (id) => {
+      const v = document.getElementById(id)?.value;
+      return v !== "" && v !== null && v !== undefined && !isNaN(Number(v)) ? Number(v) : null;
+    };
+    const getChk = (id) => Boolean(document.getElementById(id)?.checked);
+
+    // 1. Head-End
+    payload.head_end = payload.head_end || {};
+    payload.head_end.chip_path = getVal("cfg-he-chip") || null;
+    payload.head_end.debounce_ms = getNum("cfg-he-debounce-ms") || 100;
+    const idleBias = getVal("cfg-he-relay-idle-bias");
+    payload.head_end.relay_idle_bias_confirmed = idleBias || null;
+    payload.head_end.tank_low_float_pin = getNum("cfg-he-tank-low-pin");
+    payload.head_end.tank_low_active_low = getChk("cfg-he-tank-low-pol");
+    payload.head_end.interlock_out_pin = getNum("cfg-he-interlock-out-pin");
+    payload.head_end.interlock_out_active_low = getChk("cfg-he-interlock-out-pol");
+    payload.head_end.interlock_mid_pin = getNum("cfg-he-interlock-mid-pin");
+    payload.head_end.interlock_mid_active_low = getChk("cfg-he-interlock-mid-pol");
+    payload.head_end.leak_sensor_pin = getNum("cfg-he-leak-pin");
+    payload.head_end.leak_active_low = getChk("cfg-he-leak-pol");
+    payload.head_end.contactor_relay_pin = getNum("cfg-he-relay-pin");
+    payload.head_end.contactor_relay_active_high = getChk("cfg-he-relay-active-high");
+    payload.head_end.contactor_feedback_pin = getNum("cfg-he-feedback-pin");
+    payload.head_end.feedback_active_low = getChk("cfg-he-feedback-pol");
+
+    // 2. Motor
+    payload.motor = payload.motor || {};
+    payload.motor.auto_mode = getChk("cfg-motor-auto-mode");
+    payload.motor.max_runtime_s = getNum("cfg-motor-max-runtime-s") || 900;
+    payload.motor.cooldown_s = getNum("cfg-motor-cooldown-s") || 1800;
+    payload.motor.min_off_time_s = getNum("cfg-motor-min-off-time-s") || 120;
+    payload.motor.pull_in_timeout_ms = getNum("cfg-motor-pull-in-ms") || 1000;
+    payload.motor.drop_out_timeout_ms = getNum("cfg-motor-drop-out-ms") || 1000;
+
+    // 3. Power Meter & Level Sensor
+    payload.power_meter = payload.power_meter || {};
+    payload.power_meter.enabled = getChk("cfg-pm-enabled");
+    payload.power_meter.sensor_type = getVal("cfg-pm-sensor-type") || "none";
+    payload.power_meter.serial_port = getVal("cfg-pm-serial-port") || "/dev/pzem";
+    payload.power_meter.voltage_min_v = getNum("cfg-pm-voltage-min") ?? 180.0;
+    payload.power_meter.voltage_max_v = getNum("cfg-pm-voltage-max") ?? 260.0;
+    payload.power_meter.dry_run_current_pct = getNum("cfg-pm-dry-run-pct") ?? 65.0;
+    payload.power_meter.overload_current_pct = getNum("cfg-pm-overload-pct") ?? 135.0;
+    payload.power_meter.baseline_current_a = getNum("cfg-pm-baseline-a");
+    payload.power_meter.inrush_blanking_s = getNum("cfg-pm-inrush-s") ?? 3.0;
+
+    payload.level_sensor = payload.level_sensor || {};
+    payload.level_sensor.enabled = getChk("cfg-lvl-enabled");
+    payload.level_sensor.sensor_type = getVal("cfg-lvl-sensor-type") || "none";
+    payload.level_sensor.tank_height_cm = getNum("cfg-lvl-tank-height") ?? 150.0;
+    payload.level_sensor.tank_diameter_cm = getNum("cfg-lvl-tank-diam") ?? 100.0;
+    payload.level_sensor.sensor_offset_cm = getNum("cfg-lvl-offset") ?? 20.0;
+    payload.level_sensor.predictive_stop_enabled = getChk("cfg-lvl-predictive-stop");
+    payload.level_sensor.predictive_stop_pct = getNum("cfg-lvl-stop-pct") ?? 95.0;
+    payload.level_sensor.night_leak_detection_enabled = getChk("cfg-lvl-night-leak");
+    payload.level_sensor.night_leak_max_drop_litres = getNum("cfg-lvl-night-leak-drop") ?? 15.0;
+
+    // 4. Garden Gateway
+    payload.garden_gateway = payload.garden_gateway || {};
+    payload.garden_gateway.enabled = getChk("cfg-gw-enabled");
+    payload.garden_gateway.serial_port = getVal("cfg-gw-serial-port") || "/dev/garden-gateway";
+    payload.garden_gateway.baud_rate = getNum("cfg-gw-baud-rate") || 115200;
+    payload.garden_gateway.link_loss_timeout_s = getNum("cfg-gw-timeout-s") || 30;
+    const sharedKeyVal = getVal("cfg-gw-shared-key");
+    if (sharedKeyVal) payload.garden_gateway.shared_key = sharedKeyVal;
+
+    // 5. Zones
+    payload.zones = payload.zones || {};
+    for (let i = 1; i <= 4; i++) {
+      const zk = `zone_${i}`;
+      payload.zones[zk] = payload.zones[zk] || {};
+      payload.zones[zk].enabled = getChk(`cfg-z${i}-enabled`);
+      payload.zones[zk].name = getVal(`cfg-z${i}-name`) || `Zone ${i}`;
+      payload.zones[zk].soil_dry_threshold_pct = getNum(`cfg-z${i}-threshold`) ?? 35.0;
+      payload.zones[zk].pulse_seconds = getNum(`cfg-z${i}-pulse-s`) || 15;
+      payload.zones[zk].cooldown_hours = getNum(`cfg-z${i}-cooldown-h`) ?? 6.0;
+      if (i === 1) payload.zones[zk].has_flow_meter = getChk("cfg-z1-has-flow");
+    }
+
+    // 6. Alerts
+    payload.telegram = payload.telegram || {};
+    payload.telegram.enabled = getChk("cfg-tg-enabled");
+    const tgToken = getVal("cfg-tg-token");
+    if (tgToken) payload.telegram.bot_token = tgToken;
+    payload.telegram.chat_id = getVal("cfg-tg-chat-id") || null;
+
+    payload.ntfy = payload.ntfy || {};
+    payload.ntfy.enabled = getChk("cfg-ntfy-enabled");
+    payload.ntfy.server_url = getVal("cfg-ntfy-url") || "https://ntfy.sh";
+    payload.ntfy.topic = getVal("cfg-ntfy-topic") || null;
+    const ntfyToken = getVal("cfg-ntfy-token");
+    if (ntfyToken) payload.ntfy.access_token = ntfyToken;
+
+    payload.mqtt = payload.mqtt || {};
+    payload.mqtt.enabled = getChk("cfg-mqtt-enabled");
+    payload.mqtt.broker_host = getVal("cfg-mqtt-host") || "127.0.0.1";
+    payload.mqtt.broker_port = getNum("cfg-mqtt-port") || 1883;
+    payload.mqtt.username = getVal("cfg-mqtt-user") || null;
+    const mqttPass = getVal("cfg-mqtt-pass");
+    if (mqttPass) payload.mqtt.password = mqttPass;
+    payload.mqtt.ha_discovery_enabled = getChk("cfg-mqtt-ha");
+
+    // 7. Weather
+    payload.weather = payload.weather || {};
+    payload.weather.enabled = getChk("cfg-wx-enabled");
+    payload.weather.latitude = getNum("cfg-wx-lat") ?? 0.0;
+    payload.weather.longitude = getNum("cfg-wx-lon") ?? 0.0;
+    payload.weather.rain_prob_threshold_pct = getNum("cfg-wx-rain-prob") ?? 60.0;
+    payload.weather.past_rain_threshold_mm = getNum("cfg-wx-past-rain") ?? 5.0;
+
+    // 8. Audio, Display, Database
+    payload.audio = payload.audio || {};
+    payload.audio.enabled = getChk("cfg-audio-enabled");
+    payload.audio.alsa_device = getVal("cfg-audio-device") || "default";
+
+    payload.buzzer = payload.buzzer || {};
+    payload.buzzer.enabled = getChk("cfg-buzzer-enabled");
+    payload.buzzer.gpio_pin = getNum("cfg-buzzer-pin");
+
+    payload.display = payload.display || {};
+    payload.display.enabled = getChk("cfg-disp-enabled");
+    payload.display.i2c_bus = getNum("cfg-disp-i2c-bus") || 7;
+    payload.display.rotate = getNum("cfg-disp-rotate") || 0;
+
+    payload.database = payload.database || {};
+    payload.database.retention_days = getNum("cfg-db-retention") || 90;
+    payload.database.cache_size_kb = getNum("cfg-db-cache-kb") || -2000;
+    payload.database.backup_retention_days = getNum("cfg-db-backup-retention") || 7;
+
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const resData = await res.json();
+    if (!res.ok) {
+      if (statusBanner) {
+        statusBanner.style.background = "#fef2f2";
+        statusBanner.style.color = "#991b1b";
+        statusBanner.textContent = "❌ Error saving configuration: " + (resData.detail || JSON.stringify(resData));
+      }
+      return;
+    }
+
+    if (statusBanner) {
+      statusBanner.style.background = "#f0fdf4";
+      statusBanner.style.color = "#166534";
+      statusBanner.textContent = "✅ " + (resData.message || "Configuration saved successfully.");
+    }
+
+    // Refresh form from newly saved state
+    await loadSettingsForm();
+  } catch (err) {
+    if (statusBanner) {
+      statusBanner.style.background = "#fef2f2";
+      statusBanner.style.color = "#991b1b";
+      statusBanner.textContent = "❌ Failed to save configuration: " + err.message;
+    }
+  }
+}
+
+function toggleConfigView() {
+  const rawCont = document.getElementById("settings-raw-container");
+  const btn = document.getElementById("btn-toggle-config-view");
+  if (!rawCont) return;
+  const isHidden = rawCont.style.display === "none";
+  rawCont.style.display = isHidden ? "block" : "none";
+  if (btn) btn.textContent = isHidden ? "📝 Show Form Only" : "📋 Toggle Raw JSON";
+}
+
+function togglePasswordVisibility(targetId) {
+  const input = document.getElementById(targetId);
+  if (!input) return;
+  input.type = input.type === "password" ? "text" : "password";
 }
 
 // =============================================================================
@@ -954,6 +1286,18 @@ document.addEventListener("click", (e) => {
     case "save-settings":
       saveSettingsForm();
       break;
+    case "reload-settings":
+      loadSettingsForm();
+      break;
+    case "toggle-config-view":
+      toggleConfigView();
+      break;
+    case "toggle-pwd": {
+      const targetId = btn.getAttribute("data-target");
+      if (targetId) togglePasswordVisibility(targetId);
+      break;
+    }
+
     case "refresh-events":
       fetchEventJournal();
       break;
@@ -1062,5 +1406,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   connectSSE();
   fetchEventJournal();
-  loadSettingsYaml();
+  loadSettingsForm();
 });
+

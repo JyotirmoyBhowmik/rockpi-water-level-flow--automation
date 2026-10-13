@@ -733,20 +733,668 @@
     <!-- ================================================================= -->
     <!-- TAB 5: SYSTEM CONFIGURATION (/etc/smart-water/config.yaml)        -->
     <!-- ================================================================= -->
+    <!-- ================================================================= -->
+    <!-- TAB 5: SYSTEM CONFIGURATION & HARDWARE PARAMETER CONSOLE         -->
+    <!-- ================================================================= -->
     <section id="tab-settings" class="tab-pane" style="display: none;">
-      <div class="card">
-        <div class="card-header">
+      <!-- Action Toolbar Card -->
+      <div class="card" style="margin-bottom: 1rem;">
+        <div class="card-header flex flex-wrap justify-between items-center gap-3">
           <div>
-            <h2 style="font-size: 0.95rem; font-weight: 700;">System Configuration Reference (/etc/smart-water/config.yaml)</h2>
-            <p style="font-size: 11px; color: #64748b;">Live configuration settings validated via Pydantic v2.</p>
+            <h2 style="font-size: 1rem; font-weight: 700; color: #0f172a; margin: 0;">⚙️ System Configuration Console</h2>
+            <p style="font-size: 12px; color: #64748b; margin: 2px 0 0 0;">
+              Runtime settings saved to <code>/var/lib/smart-water/settings.yaml</code> (overrides <code>config.yaml</code>). Validated strictly via Pydantic v2.
+            </p>
           </div>
-          <button class="btn btn-primary btn-sm" data-action="save-settings">Save Configuration</button>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-secondary btn-sm" data-action="reload-settings" title="Reload settings from server">🔄 Reload</button>
+            <button class="btn btn-secondary btn-sm" id="btn-toggle-config-view" data-action="toggle-config-view" title="Toggle Raw JSON View">📋 Toggle Raw JSON</button>
+            <button class="btn btn-primary btn-sm" data-action="save-settings" title="Save all changes to disk">💾 Save Configuration</button>
+          </div>
         </div>
-        <div id="settings-form-container">
-          <pre style="background: #f8fafc; padding: 1rem; border-radius: 0.5rem; font-size: 11px; overflow-x: auto;" id="settings-yaml-preview">Loading configuration...</pre>
+
+        <!-- Banner for status and restart required -->
+        <div id="settings-restart-banner" style="display: none; background: #fffbeb; border: 1px solid #fef3c7; border-left: 4px solid #f59e0b; padding: 0.75rem 1rem; border-radius: 0.375rem; margin-top: 0.75rem; font-size: 12px; color: #92400e;">
+          ⚠️ <strong>Hardware Re-bind Required:</strong> Pin numbers, GPIO chip paths, or polarity settings were modified. Run <code>sudo systemctl restart smart-water</code> on the host to re-bind Linux character devices.
+        </div>
+        <div id="settings-status-banner" style="display: none; padding: 0.75rem 1rem; border-radius: 0.375rem; margin-top: 0.75rem; font-size: 12px;"></div>
+      </div>
+
+      <!-- Raw JSON Container (hidden by default) -->
+      <div id="settings-raw-container" style="display: none; margin-bottom: 1rem;">
+        <div class="card">
+          <div class="card-header">
+            <span style="font-weight: 700; font-size: 12px;">Raw System Configuration JSON</span>
+            <span class="badge badge-gray">Read-Only View</span>
+          </div>
+          <pre style="background: #0f172a; color: #38bdf8; padding: 1rem; border-radius: 0.5rem; font-size: 11px; overflow-x: auto; max-height: 400px;" id="settings-yaml-preview">Loading configuration...</pre>
         </div>
       </div>
+
+      <!-- Interactive Form Container -->
+      <form id="settings-form" onsubmit="event.preventDefault();" style="display: flex; flex-direction: column; gap: 1rem;">
+
+        <!-- 1. Head-End Hardware & GPIO Pins -->
+        <div class="card">
+          <div class="card-header">
+            <span style="font-weight: 700; font-size: 13px; color: #1e293b;">1. Head-End Hardware &amp; Linux GPIO Pins</span>
+            <span class="badge badge-blue">Controller Head-End</span>
+          </div>
+          <div style="font-size: 11px; color: #64748b; margin-bottom: 0.75rem;">
+            Linux GPIO character device line offsets for PC817 optocoupler inputs and 25A contactor relay driver.
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">GPIO Chip Path:</label>
+              <input type="text" id="cfg-he-chip" class="form-input" placeholder="/dev/gpiochip1" />
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Debounce Filter (ms):</label>
+              <input type="number" id="cfg-he-debounce-ms" class="form-input" min="10" max="1000" placeholder="100" />
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Relay Idle Bias Confirmed:</label>
+              <select id="cfg-he-relay-idle-bias" class="form-input">
+                <option value="">None (Standard Active-High)</option>
+                <option value="pull_up">pull_up (Verified Active-Low)</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="margin-top: 1rem; border-top: 1px solid #f1f5f9; padding-top: 0.75rem;" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <!-- IN1 -->
+            <div style="background: #f8fafc; padding: 0.6rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <span style="font-weight: 700; font-size: 11px; color: #1e293b;">IN1: Tank Low Float</span>
+              <div class="flex items-center gap-2" style="margin-top: 4px;">
+                <input type="number" id="cfg-he-tank-low-pin" class="form-input" placeholder="Pin offset" style="width: 100px;" />
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-he-tank-low-pol" />
+                  <span>Active-Low (PC817)</span>
+                </label>
+              </div>
+            </div>
+            <!-- IN2 -->
+            <div style="background: #f8fafc; padding: 0.6rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <span style="font-weight: 700; font-size: 11px; color: #1e293b;">IN2: Interlock Chain Out</span>
+              <div class="flex items-center gap-2" style="margin-top: 4px;">
+                <input type="number" id="cfg-he-interlock-out-pin" class="form-input" placeholder="Pin offset" style="width: 100px;" />
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-he-interlock-out-pol" />
+                  <span>Active-Low (PC817)</span>
+                </label>
+              </div>
+            </div>
+            <!-- IN3 -->
+            <div style="background: #f8fafc; padding: 0.6rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <span style="font-weight: 700; font-size: 11px; color: #1e293b;">IN3: Interlock Mid-Tap</span>
+              <div class="flex items-center gap-2" style="margin-top: 4px;">
+                <input type="number" id="cfg-he-interlock-mid-pin" class="form-input" placeholder="Pin offset" style="width: 100px;" />
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-he-interlock-mid-pol" />
+                  <span>Active-Low (PC817)</span>
+                </label>
+              </div>
+            </div>
+            <!-- IN4 -->
+            <div style="background: #f8fafc; padding: 0.6rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <span style="font-weight: 700; font-size: 11px; color: #1e293b;">IN4: Water Leak Sensor</span>
+              <div class="flex items-center gap-2" style="margin-top: 4px;">
+                <input type="number" id="cfg-he-leak-pin" class="form-input" placeholder="Pin offset" style="width: 100px;" />
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-he-leak-pol" />
+                  <span>Active-Low (PC817)</span>
+                </label>
+              </div>
+            </div>
+            <!-- Output Relay -->
+            <div style="background: #f8fafc; padding: 0.6rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <span style="font-weight: 700; font-size: 11px; color: #1e293b;">Output: Contactor Relay Driver</span>
+              <div class="flex items-center gap-2" style="margin-top: 4px;">
+                <input type="number" id="cfg-he-relay-pin" class="form-input" placeholder="Pin offset" style="width: 100px;" />
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-he-relay-active-high" />
+                  <span>Active-High (Standard)</span>
+                </label>
+              </div>
+            </div>
+            <!-- Aux Feedback -->
+            <div style="background: #f8fafc; padding: 0.6rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <span style="font-weight: 700; font-size: 11px; color: #1e293b;">Optional: Contactor Aux Feedback</span>
+              <div class="flex items-center gap-2" style="margin-top: 4px;">
+                <input type="number" id="cfg-he-feedback-pin" class="form-input" placeholder="Pin offset" style="width: 100px;" />
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-he-feedback-pol" />
+                  <span>Active-Low (PC817)</span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Mains Motor Protection & Timers -->
+        <div class="card">
+          <div class="card-header">
+            <span style="font-weight: 700; font-size: 13px; color: #1e293b;">2. Mains Motor Safety &amp; Protection Timers</span>
+            <span class="badge badge-yellow">Contactor Interlocks</span>
+          </div>
+          <div style="font-size: 11px; color: #64748b; margin-bottom: 0.75rem;">
+            Run timers, mandatory thermal cooldowns, and coil transition timeouts.
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div style="grid-column: span 3;">
+              <label style="font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" id="cfg-motor-auto-mode" />
+                <span>Enable Automated Replenishment (Auto-starts motor when tank is low and interlock is healthy)</span>
+              </label>
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Max Continuous Runtime (s):</label>
+              <input type="number" id="cfg-motor-max-runtime-s" class="form-input" min="30" max="3600" placeholder="900" />
+              <span style="font-size: 10px; color: #64748b;">Max run limit before emergency cutoff (default 900s / 15m)</span>
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Mandatory Cooldown (s):</label>
+              <input type="number" id="cfg-motor-cooldown-s" class="form-input" min="60" max="7200" placeholder="1800" />
+              <span style="font-size: 10px; color: #64748b;">Forced cooldown after max-runtime trip (default 1800s / 30m)</span>
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Min OFF Time Between Starts (s):</label>
+              <input type="number" id="cfg-motor-min-off-time-s" class="form-input" min="10" max="1800" placeholder="120" />
+              <span style="font-size: 10px; color: #64748b;">Anti-short-cycling delay between stop and next start</span>
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Contactor Pull-In Timeout (ms):</label>
+              <input type="number" id="cfg-motor-pull-in-ms" class="form-input" min="50" max="5000" placeholder="1000" />
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Contactor Drop-Out Timeout (ms):</label>
+              <input type="number" id="cfg-motor-drop-out-ms" class="form-input" min="50" max="5000" placeholder="1000" />
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Power Meter & Tank Level Sensors -->
+        <div class="card">
+          <div class="card-header">
+            <span style="font-weight: 700; font-size: 13px; color: #1e293b;">3. Motor Power Meter &amp; Tank Level Sensors</span>
+            <span class="badge badge-purple">Continuous Telemetry</span>
+          </div>
+          <!-- Power Meter Sub-Section -->
+          <div style="background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0; margin-bottom: 0.75rem;">
+            <div class="flex items-center justify-between" style="margin-bottom: 6px;">
+              <span style="font-weight: 700; font-size: 12px; color: #1e293b;">Motor AC Power Meter (PZEM-004T v3 / SCT-013 CT)</span>
+              <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                <input type="checkbox" id="cfg-pm-enabled" />
+                <span>Enabled</span>
+              </label>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Sensor Interface:</label>
+                <select id="cfg-pm-sensor-type" class="form-input">
+                  <option value="none">None</option>
+                  <option value="pzem004t">PZEM-004T v3 (Modbus RTU)</option>
+                  <option value="sct013_ads1115">SCT-013 CT + ADS1115</option>
+                </select>
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Serial Device Path:</label>
+                <input type="text" id="cfg-pm-serial-port" class="form-input" placeholder="/dev/pzem" />
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Under-Voltage Cutoff (V):</label>
+                <input type="number" step="0.1" id="cfg-pm-voltage-min" class="form-input" placeholder="180.0" />
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Over-Voltage Cutoff (V):</label>
+                <input type="number" step="0.1" id="cfg-pm-voltage-max" class="form-input" placeholder="260.0" />
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Dry-Run Cutoff (% of baseline):</label>
+                <input type="number" step="0.1" id="cfg-pm-dry-run-pct" class="form-input" placeholder="65.0" />
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Overload Cutoff (% of baseline):</label>
+                <input type="number" step="0.1" id="cfg-pm-overload-pct" class="form-input" placeholder="135.0" />
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Baseline Current (A):</label>
+                <input type="number" step="0.1" id="cfg-pm-baseline-a" class="form-input" placeholder="Auto-learned if empty" />
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Inrush Blanking (s):</label>
+                <input type="number" step="0.1" id="cfg-pm-inrush-s" class="form-input" placeholder="3.0" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Tank Level Sensor Sub-Section -->
+          <div style="background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+            <div class="flex items-center justify-between" style="margin-bottom: 6px;">
+              <span style="font-weight: 700; font-size: 12px; color: #1e293b;">Continuous Overhead Tank Level Sensor (JSN-SR04T / 4-20mA Pressure)</span>
+              <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                <input type="checkbox" id="cfg-lvl-enabled" />
+                <span>Enabled</span>
+              </label>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Sensor Type:</label>
+                <select id="cfg-lvl-sensor-type" class="form-input">
+                  <option value="none">None</option>
+                  <option value="jsn_sr04t">JSN-SR04T (Ultrasonic)</option>
+                  <option value="pressure_4_20ma">4-20mA Pressure Transducer</option>
+                </select>
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Tank Height/Depth (cm):</label>
+                <input type="number" step="0.1" id="cfg-lvl-tank-height" class="form-input" placeholder="150.0" />
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Tank Diameter (cm):</label>
+                <input type="number" step="0.1" id="cfg-lvl-tank-diam" class="form-input" placeholder="100.0" />
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Sensor Offset / Blind Zone (cm):</label>
+                <input type="number" step="0.1" id="cfg-lvl-offset" class="form-input" placeholder="20.0" />
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 4px; cursor: pointer; margin-top: 18px;">
+                  <input type="checkbox" id="cfg-lvl-predictive-stop" />
+                  <span>Predictive Motor Stop</span>
+                </label>
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Predictive Stop Level (%):</label>
+                <input type="number" step="0.1" id="cfg-lvl-stop-pct" class="form-input" placeholder="95.0" />
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 4px; cursor: pointer; margin-top: 18px;">
+                  <input type="checkbox" id="cfg-lvl-night-leak" />
+                  <span>Night Leak Detection</span>
+                </label>
+              </div>
+              <div>
+                <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Max Night Drop (Litres):</label>
+                <input type="number" step="0.1" id="cfg-lvl-night-leak-drop" class="form-input" placeholder="15.0" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Wireless Garden Gateway (ESP-NOW) -->
+        <div class="card">
+          <div class="card-header">
+            <span style="font-weight: 700; font-size: 13px; color: #1e293b;">4. Wireless Garden Gateway (USB ESP32-C3 ESP-NOW)</span>
+            <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+              <input type="checkbox" id="cfg-gw-enabled" />
+              <span>Gateway Enabled</span>
+            </label>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">USB Serial Port:</label>
+              <input type="text" id="cfg-gw-serial-port" class="form-input" placeholder="/dev/garden-gateway" />
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">UART Baud Rate:</label>
+              <input type="number" id="cfg-gw-baud-rate" class="form-input" placeholder="115200" />
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Link Loss Timeout (s):</label>
+              <input type="number" id="cfg-gw-timeout-s" class="form-input" min="5" max="300" placeholder="30" />
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">HMAC-SHA256 Shared Key:</label>
+              <div class="flex items-center gap-1">
+                <input type="password" id="cfg-gw-shared-key" class="form-input" placeholder="Leave unchanged or enter 64-hex key" />
+                <button type="button" class="btn btn-secondary btn-sm" data-action="toggle-pwd" data-target="cfg-gw-shared-key" title="Show/Hide">👁️</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. Irrigation Zones (Zone 1 to Zone 4) -->
+        <div class="card">
+          <div class="card-header">
+            <span style="font-weight: 700; font-size: 13px; color: #1e293b;">5. Precision Irrigation Zones (1 to 4)</span>
+            <span class="badge badge-green">Garden Node</span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <!-- Zone 1 -->
+            <div style="background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <div class="flex items-center justify-between" style="margin-bottom: 4px;">
+                <span style="font-weight: 700; font-size: 11px; color: #1e293b;">Zone 1</span>
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-z1-enabled" />
+                  <span>Enabled</span>
+                </label>
+              </div>
+              <div class="grid grid-cols-2 gap-2" style="margin-top: 4px;">
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Zone Name:</label>
+                  <input type="text" id="cfg-z1-name" class="form-input" placeholder="Zone 1" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Dry Moisture Threshold (%):</label>
+                  <input type="number" step="0.1" id="cfg-z1-threshold" class="form-input" placeholder="35.0" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Watering Pulse (s):</label>
+                  <input type="number" id="cfg-z1-pulse-s" class="form-input" placeholder="15" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Cooldown Between Pulses (h):</label>
+                  <input type="number" step="0.1" id="cfg-z1-cooldown-h" class="form-input" placeholder="6.0" />
+                </div>
+                <div style="grid-column: span 2;">
+                  <label style="font-size: 10px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                    <input type="checkbox" id="cfg-z1-has-flow" />
+                    <span>Dedicated YF-S401 Flow Meter Installed (450 pulses/L)</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Zone 2 -->
+            <div style="background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <div class="flex items-center justify-between" style="margin-bottom: 4px;">
+                <span style="font-weight: 700; font-size: 11px; color: #1e293b;">Zone 2</span>
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-z2-enabled" />
+                  <span>Enabled</span>
+                </label>
+              </div>
+              <div class="grid grid-cols-2 gap-2" style="margin-top: 4px;">
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Zone Name:</label>
+                  <input type="text" id="cfg-z2-name" class="form-input" placeholder="Zone 2" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Dry Moisture Threshold (%):</label>
+                  <input type="number" step="0.1" id="cfg-z2-threshold" class="form-input" placeholder="35.0" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Watering Pulse (s):</label>
+                  <input type="number" id="cfg-z2-pulse-s" class="form-input" placeholder="15" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Cooldown Between Pulses (h):</label>
+                  <input type="number" step="0.1" id="cfg-z2-cooldown-h" class="form-input" placeholder="6.0" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Zone 3 -->
+            <div style="background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <div class="flex items-center justify-between" style="margin-bottom: 4px;">
+                <span style="font-weight: 700; font-size: 11px; color: #1e293b;">Zone 3</span>
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-z3-enabled" />
+                  <span>Enabled</span>
+                </label>
+              </div>
+              <div class="grid grid-cols-2 gap-2" style="margin-top: 4px;">
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Zone Name:</label>
+                  <input type="text" id="cfg-z3-name" class="form-input" placeholder="Zone 3" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Dry Moisture Threshold (%):</label>
+                  <input type="number" step="0.1" id="cfg-z3-threshold" class="form-input" placeholder="35.0" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Watering Pulse (s):</label>
+                  <input type="number" id="cfg-z3-pulse-s" class="form-input" placeholder="15" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Cooldown Between Pulses (h):</label>
+                  <input type="number" step="0.1" id="cfg-z3-cooldown-h" class="form-input" placeholder="6.0" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Zone 4 -->
+            <div style="background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <div class="flex items-center justify-between" style="margin-bottom: 4px;">
+                <span style="font-weight: 700; font-size: 11px; color: #1e293b;">Zone 4</span>
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-z4-enabled" />
+                  <span>Enabled</span>
+                </label>
+              </div>
+              <div class="grid grid-cols-2 gap-2" style="margin-top: 4px;">
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Zone Name:</label>
+                  <input type="text" id="cfg-z4-name" class="form-input" placeholder="Zone 4" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Dry Moisture Threshold (%):</label>
+                  <input type="number" step="0.1" id="cfg-z4-threshold" class="form-input" placeholder="35.0" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Watering Pulse (s):</label>
+                  <input type="number" id="cfg-z4-pulse-s" class="form-input" placeholder="15" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Cooldown Between Pulses (h):</label>
+                  <input type="number" step="0.1" id="cfg-z4-cooldown-h" class="form-input" placeholder="6.0" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 6. Alerts & Notifications (Telegram, ntfy.sh, MQTT) -->
+        <div class="card">
+          <div class="card-header">
+            <span style="font-weight: 700; font-size: 13px; color: #1e293b;">6. Alerts &amp; Remote Integrations (Telegram, ntfy.sh, MQTT)</span>
+            <span class="badge badge-gray">External Push</span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <!-- Telegram -->
+            <div style="background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <div class="flex items-center justify-between" style="margin-bottom: 6px;">
+                <span style="font-weight: 700; font-size: 12px; color: #1e293b;">Telegram Bot</span>
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-tg-enabled" />
+                  <span>Enabled</span>
+                </label>
+              </div>
+              <div style="margin-bottom: 6px;">
+                <label style="font-size: 10px; font-weight: 600;">Bot API Token:</label>
+                <div class="flex items-center gap-1">
+                  <input type="password" id="cfg-tg-token" class="form-input" placeholder="123456:ABC-DEF..." />
+                  <button type="button" class="btn btn-secondary btn-sm" data-action="toggle-pwd" data-target="cfg-tg-token">👁️</button>
+                </div>
+              </div>
+              <div>
+                <label style="font-size: 10px; font-weight: 600;">Target Chat ID:</label>
+                <input type="text" id="cfg-tg-chat-id" class="form-input" placeholder="-100123456789" />
+              </div>
+            </div>
+
+            <!-- ntfy.sh -->
+            <div style="background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <div class="flex items-center justify-between" style="margin-bottom: 6px;">
+                <span style="font-weight: 700; font-size: 12px; color: #1e293b;">ntfy.sh Push</span>
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-ntfy-enabled" />
+                  <span>Enabled</span>
+                </label>
+              </div>
+              <div style="margin-bottom: 6px;">
+                <label style="font-size: 10px; font-weight: 600;">Server URL:</label>
+                <input type="text" id="cfg-ntfy-url" class="form-input" placeholder="https://ntfy.sh" />
+              </div>
+              <div style="margin-bottom: 6px;">
+                <label style="font-size: 10px; font-weight: 600;">Topic Name:</label>
+                <input type="text" id="cfg-ntfy-topic" class="form-input" placeholder="my-smart-water-topic" />
+              </div>
+              <div>
+                <label style="font-size: 10px; font-weight: 600;">Access Token (Optional):</label>
+                <div class="flex items-center gap-1">
+                  <input type="password" id="cfg-ntfy-token" class="form-input" placeholder="tk_..." />
+                  <button type="button" class="btn btn-secondary btn-sm" data-action="toggle-pwd" data-target="cfg-ntfy-token">👁️</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- MQTT -->
+            <div style="background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <div class="flex items-center justify-between" style="margin-bottom: 6px;">
+                <span style="font-weight: 700; font-size: 12px; color: #1e293b;">MQTT / Home Assistant</span>
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-mqtt-enabled" />
+                  <span>Enabled</span>
+                </label>
+              </div>
+              <div class="grid grid-cols-2 gap-2" style="margin-bottom: 6px;">
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Broker Host:</label>
+                  <input type="text" id="cfg-mqtt-host" class="form-input" placeholder="127.0.0.1" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Port:</label>
+                  <input type="number" id="cfg-mqtt-port" class="form-input" placeholder="1883" />
+                </div>
+              </div>
+              <div class="grid grid-cols-2 gap-2" style="margin-bottom: 6px;">
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Username:</label>
+                  <input type="text" id="cfg-mqtt-user" class="form-input" placeholder="Optional" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Password:</label>
+                  <input type="password" id="cfg-mqtt-pass" class="form-input" placeholder="Optional" />
+                </div>
+              </div>
+              <div>
+                <label style="font-size: 10px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-mqtt-ha" />
+                  <span>Home Assistant MQTT Auto-Discovery</span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 7. Environmental Weather Adaptive Rules -->
+        <div class="card">
+          <div class="card-header">
+            <span style="font-weight: 700; font-size: 13px; color: #1e293b;">7. Environmental Weather Rules (Open-Meteo API)</span>
+            <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+              <input type="checkbox" id="cfg-wx-enabled" />
+              <span>Enable Rain Skip Automation</span>
+            </label>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Latitude:</label>
+              <input type="number" step="0.0001" id="cfg-wx-lat" class="form-input" placeholder="12.9716" />
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Longitude:</label>
+              <input type="number" step="0.0001" id="cfg-wx-lon" class="form-input" placeholder="77.5946" />
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Rain Skip Threshold (%):</label>
+              <input type="number" step="0.1" id="cfg-wx-rain-prob" class="form-input" placeholder="60.0" />
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 600; display: block; margin-bottom: 3px;">Past 24h Rain Threshold (mm):</label>
+              <input type="number" step="0.1" id="cfg-wx-past-rain" class="form-input" placeholder="5.0" />
+            </div>
+          </div>
+        </div>
+
+        <!-- 8. Display, Audio, SQLite Database & System Memory -->
+        <div class="card">
+          <div class="card-header">
+            <span style="font-weight: 700; font-size: 13px; color: #1e293b;">8. Display, Audio, SQLite Storage &amp; Hard-Coded Memory Limit</span>
+            <span class="badge badge-gray">System Architecture</span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <!-- Audio & Buzzer -->
+            <div style="background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <span style="font-weight: 700; font-size: 12px; color: #1e293b; display: block; margin-bottom: 6px;">USB Voice &amp; Piezo Buzzer</span>
+              <div style="margin-bottom: 6px;">
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-audio-enabled" />
+                  <span>Enable USB Audio (espeak-ng Voice Alerts)</span>
+                </label>
+              </div>
+              <div style="margin-bottom: 6px;">
+                <label style="font-size: 10px; font-weight: 600;">ALSA Output Device:</label>
+                <input type="text" id="cfg-audio-device" class="form-input" placeholder="default" />
+              </div>
+              <div style="border-top: 1px solid #e2e8f0; padding-top: 6px; margin-top: 6px;">
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-buzzer-enabled" />
+                  <span>Enable Piezo Buzzer on GPIO Pin:</span>
+                </label>
+                <input type="number" id="cfg-buzzer-pin" class="form-input" placeholder="GPIO Pin offset" style="margin-top: 4px;" />
+              </div>
+            </div>
+
+            <!-- SSD1306 OLED -->
+            <div style="background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <span style="font-weight: 700; font-size: 12px; color: #1e293b; display: block; margin-bottom: 6px;">Local SSD1306 OLED (I2C)</span>
+              <div style="margin-bottom: 6px;">
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="cfg-disp-enabled" />
+                  <span>Enable 0.96" OLED Status Screen</span>
+                </label>
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">I2C Bus:</label>
+                  <input type="number" id="cfg-disp-i2c-bus" class="form-input" placeholder="7" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; font-weight: 600;">Screen Rotation:</label>
+                  <select id="cfg-disp-rotate" class="form-input">
+                    <option value="0">0°</option>
+                    <option value="180">180° (Inverted)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- Database & Memory Cap -->
+            <div style="background: #f8fafc; padding: 0.75rem; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+              <span style="font-weight: 700; font-size: 12px; color: #1e293b; display: block; margin-bottom: 6px;">SQLite Storage &amp; OS Limits</span>
+              <div style="margin-bottom: 6px;">
+                <label style="font-size: 10px; font-weight: 600;">Telemetry Retention (Days):</label>
+                <input type="number" id="cfg-db-retention" class="form-input" min="7" max="730" placeholder="90" />
+              </div>
+              <div style="margin-bottom: 6px;">
+                <label style="font-size: 10px; font-weight: 600;">Database Cache Cap (KB):</label>
+                <input type="number" id="cfg-db-cache-kb" class="form-input" placeholder="-2000" />
+                <span style="font-size: 9px; color: #64748b;">-2000 caps SQLite memory to strictly 2 MB</span>
+              </div>
+              <div style="margin-bottom: 6px;">
+                <label style="font-size: 10px; font-weight: 600;">Nightly Backup Retention (Days):</label>
+                <input type="number" id="cfg-db-backup-retention" class="form-input" min="1" max="90" placeholder="7" />
+              </div>
+              <div>
+                <label style="font-size: 10px; font-weight: 600;">Hard-Coded Process RAM Cap (MB):</label>
+                <input type="number" id="cfg-sys-ram-mb" class="form-input" min="48" max="400" placeholder="128" />
+                <span style="font-size: 9px; color: #64748b;">Enforced via POSIX setrlimit RLIMIT_AS in run.py</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sticky Save Button Bar at Bottom -->
+        <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem;">
+          <button type="button" class="btn btn-secondary" data-action="reload-settings">Reset to Stored</button>
+          <button type="button" class="btn btn-primary" data-action="save-settings" style="font-size: 14px; padding: 0.6rem 1.25rem;">💾 Save &amp; Apply All Configuration</button>
+        </div>
+
+      </form>
     </section>
+
 
     <!-- ================================================================= -->
     <!-- TAB 6: SYSTEM JOURNAL & SQLITE DATABASE BACKUP                    -->
