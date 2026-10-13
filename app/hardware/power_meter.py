@@ -373,6 +373,8 @@ class PowerMeterManager:
         """Returns True if power meter hardware is configured and reachable."""
         if not system_config.power_meter.enabled:
             return False
+        if os.environ.get("SMART_WATER_SIMULATOR") == "1":
+            return True
         if self._mock_reading is not None:
             return True
         if self.pzem_driver:
@@ -390,6 +392,33 @@ class PowerMeterManager:
             self._last_reading = self._mock_reading
             self._record_sample_if_running(self._mock_reading)
             return self._mock_reading
+
+        if os.environ.get("SMART_WATER_SIMULATOR") == "1":
+            import random
+            from app.hardware.gpio_driver import head_end_gpio
+            is_motor_on = head_end_gpio.get_contactor_relay()
+            now = time.time()
+            if is_motor_on:
+                curr = round(4.25 + random.uniform(-0.05, 0.05), 2)
+                volt = round(231.0 + random.uniform(-1.0, 1.0), 1)
+                pwr = round(volt * curr * 0.88, 1)
+                self._accumulated_energy_kwh += (pwr * (1.0 / 3600.0)) / 1000.0
+            else:
+                curr = 0.0
+                volt = 230.0
+                pwr = 0.0
+            sim_reading = PowerReading(
+                voltage_v=volt,
+                current_a=curr,
+                power_w=pwr,
+                energy_kwh=round(self._accumulated_energy_kwh, 4),
+                frequency_hz=50.0,
+                power_factor=0.88 if is_motor_on else 0.0,
+                timestamp=now,
+            )
+            self._last_reading = sim_reading
+            self._record_sample_if_running(sim_reading)
+            return sim_reading
 
         reading: Optional[PowerReading] = None
         if self.pzem_driver and self.pzem_driver.is_available():

@@ -237,13 +237,81 @@ class LibgpiodV2Backend(GPIOBackend):
         req.set_value(line_offset, Value.ACTIVE if value else Value.INACTIVE)
 
 
+class SimulatedGPIOBackend(GPIOBackend):
+    """
+    Virtual GPIO Backend simulating Rockchip RK3308 GPIO controller for Docker/VM environments.
+    Maintains virtual pin register states with auto contactor-feedback tracking.
+    """
+
+    _pins: Dict[int, int] = {}
+    _relay_pin: Optional[int] = None
+    _feedback_pin: Optional[int] = None
+
+    def __init__(self) -> None:
+        self._chip_path: Optional[str] = None
+        self._open: bool = False
+
+    def open(self, chip_path: str) -> bool:
+        self._chip_path = chip_path
+        self._open = True
+        return True
+
+    def close(self) -> None:
+        self._open = False
+
+    def request_input(self, line_offset: int, consumer: str = "smart-water", bias: str = "pull_up") -> bool:
+        if line_offset not in self._pins:
+            self._pins[line_offset] = 1
+        return True
+
+    def request_output(self, line_offset: int, consumer: str = "smart-water", initial_value: int = 0) -> bool:
+        self._pins[line_offset] = initial_value
+        return True
+
+    def get_value(self, line_offset: int) -> int:
+        return self._pins.get(line_offset, 0)
+
+    def set_value(self, line_offset: int, value: int) -> None:
+        self._pins[line_offset] = 1 if value else 0
+        if self._relay_pin is not None and line_offset == self._relay_pin and self._feedback_pin is not None:
+            self._pins[self._feedback_pin] = self._pins[line_offset]
+
+    @classmethod
+    def set_pin_level(cls, line_offset: int, value: int) -> None:
+        cls._pins[line_offset] = 1 if value else 0
+
+    @classmethod
+    def configure_contactor_pins(cls, relay_pin: int, feedback_pin: int) -> None:
+        cls._relay_pin = relay_pin
+        cls._feedback_pin = feedback_pin
+
+    @classmethod
+    def set_healthy_defaults(cls, cfg: Any) -> None:
+        if hasattr(cfg, "tank_low_float_pin") and cfg.tank_low_float_pin is not None:
+            cls._pins[cfg.tank_low_float_pin] = 0
+        if hasattr(cfg, "interlock_out_pin") and cfg.interlock_out_pin is not None:
+            cls._pins[cfg.interlock_out_pin] = 1
+        if hasattr(cfg, "interlock_mid_pin") and cfg.interlock_mid_pin is not None:
+            cls._pins[cfg.interlock_mid_pin] = 1
+        if hasattr(cfg, "leak_sensor_pin") and cfg.leak_sensor_pin is not None:
+            cls._pins[cfg.leak_sensor_pin] = 1
+        if hasattr(cfg, "contactor_feedback_pin") and cfg.contactor_feedback_pin is not None:
+            cls._pins[cfg.contactor_feedback_pin] = 0
+
+
 def create_gpio_backend() -> Optional[GPIOBackend]:
     """
     Selects libgpiod backend version at runtime.
-    Returns LibgpiodV2Backend if gpiod v2 is present,
+    Returns SimulatedGPIOBackend if SMART_WATER_SIMULATOR is active,
+    else LibgpiodV2Backend if gpiod v2 is present,
     else LibgpiodV1Backend if gpiod v1 is present,
     else None if gpiod is not available.
     """
+    import os
+    if os.environ.get("SMART_WATER_SIMULATOR") == "1":
+        logger.info("SMART_WATER_SIMULATOR active: Using SimulatedGPIOBackend.")
+        return SimulatedGPIOBackend()
+
     try:
         import gpiod
     except ImportError:

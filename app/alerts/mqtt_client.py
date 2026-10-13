@@ -13,7 +13,13 @@ from datetime import datetime, timezone
 import json
 import logging
 from typing import Any, Dict, List, Optional
-import paho.mqtt.client as mqtt
+
+try:
+    import paho.mqtt.client as mqtt
+    HAS_PAHO_MQTT = True
+except ImportError:
+    mqtt = None  # type: ignore
+    HAS_PAHO_MQTT = False
 
 from app import __version__
 from app.config import system_config
@@ -48,6 +54,10 @@ class MQTTClientService:
         cfg = system_config.mqtt
         if not cfg.enabled:
             logger.info("MQTT client is disabled in configuration.")
+            return
+
+        if not HAS_PAHO_MQTT or mqtt is None:
+            logger.warning("MQTT is enabled but paho-mqtt is not installed. MQTT service will not start.")
             return
 
         self._running = True

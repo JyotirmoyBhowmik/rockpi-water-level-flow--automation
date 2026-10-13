@@ -164,6 +164,10 @@ class HeadEndGPIODriver:
     def last_commanded_relay_state(self) -> Optional[bool]:
         return self._last_commanded_relay_state
 
+    def get_contactor_relay(self) -> bool:
+        """Returns True if contactor relay is currently energized, False otherwise."""
+        return bool(self._relay_state) if self._relay_state_known else False
+
     async def setup(self) -> bool:
         """
         Initializes claimed GPIO lines using runtime backend.
@@ -184,8 +188,9 @@ class HeadEndGPIODriver:
                 self._hardware_available = False
                 return False
 
-        # 2. Check if hardware device file exists
-        if not chip_path or not os.path.exists(chip_path):
+        # 2. Check if hardware device file exists (or simulation mode is active)
+        is_sim = os.environ.get("SMART_WATER_SIMULATOR") == "1" or chip_path == "simulated"
+        if not is_sim and (not chip_path or not os.path.exists(chip_path)):
             self._hardware_available = False
             logger.info(
                 "Head-end GPIO chip %s not accessible. State: SAFE-NO-HARDWARE. Outputs held OFF.",
@@ -201,8 +206,14 @@ class HeadEndGPIODriver:
             return False
 
         def _sync_setup() -> bool:
-            if not self._backend.open(chip_path):
+            if not self._backend.open(chip_path or "simulated"):
                 return False
+
+            if is_sim:
+                from app.hardware.gpio_backend import SimulatedGPIOBackend
+                SimulatedGPIOBackend.set_healthy_defaults(cfg)
+                if cfg.contactor_relay_pin is not None and cfg.contactor_feedback_pin is not None:
+                    SimulatedGPIOBackend.configure_contactor_pins(cfg.contactor_relay_pin, cfg.contactor_feedback_pin)
 
             # Setup Output Relay (Force OFF initially)
             if cfg.contactor_relay_pin is not None:

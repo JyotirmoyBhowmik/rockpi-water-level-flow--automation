@@ -315,6 +315,8 @@ class LevelSensorManager:
         """Returns True if continuous level sensor is configured and online."""
         if not system_config.level_sensor.enabled:
             return False
+        if os.environ.get("SMART_WATER_SIMULATOR") == "1":
+            return True
         if self._mock_reading is not None:
             return True
         if self.jsn_driver and self.jsn_driver.is_available():
@@ -343,7 +345,20 @@ class LevelSensorManager:
         raw_reading: Optional[float] = None
         water_depth_cm = 0.0
 
-        if self.jsn_driver and self.jsn_driver.is_available():
+        if os.environ.get("SMART_WATER_SIMULATOR") == "1":
+            from app.hardware.gpio_driver import head_end_gpio
+            is_motor_on = head_end_gpio.get_contactor_relay()
+            if not hasattr(self, "_sim_water_depth_cm"):
+                self._sim_water_depth_cm = 120.0
+                self._sim_last_ts = time.time()
+            now = time.time()
+            dt = max(0.1, min(5.0, now - getattr(self, "_sim_last_ts", now)))
+            self._sim_last_ts = now
+            if is_motor_on:
+                self._sim_water_depth_cm = min(cfg.tank_height_cm, self._sim_water_depth_cm + (0.35 * dt))
+            raw_reading = round((cfg.tank_height_cm + cfg.sensor_offset_cm) - self._sim_water_depth_cm, 1)
+            water_depth_cm = self._sim_water_depth_cm
+        elif self.jsn_driver and self.jsn_driver.is_available():
             raw_reading = await asyncio.to_thread(self.jsn_driver.read_distance_cm_sync)
             if raw_reading is not None:
                 # Distance from sensor at top of tank:

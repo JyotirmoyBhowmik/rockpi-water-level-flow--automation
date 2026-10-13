@@ -1,0 +1,34 @@
+FROM python:3.11-slim-bookworm
+
+# Install required system packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    sqlite3 \
+    socat \
+    curl \
+    procps \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/smart-water
+
+# Install Python requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application and simulator files
+COPY app/ app/
+COPY protocol/ protocol/
+COPY systemd/ systemd/
+COPY simulator/ simulator/
+COPY run.py .
+COPY config.example.yaml .
+
+# Make entrypoint executable
+RUN chmod +x simulator/entrypoint.sh
+
+# Create runtime directories
+RUN mkdir -p /var/lib/smart-water /etc/smart-water /run/smart-water
+
+EXPOSE 8000
+
+ENTRYPOINT ["/bin/bash", "/opt/smart-water/simulator/entrypoint.sh"]

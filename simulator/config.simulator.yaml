@@ -1,0 +1,148 @@
+# Configuration for Radxa ROCK Pi S Simulator Environment
+head_end:
+  chip_path: "simulated"
+  tank_low_float_pin: 0
+  interlock_out_pin: 1
+  interlock_mid_pin: 2
+  leak_sensor_pin: 3
+  contactor_relay_pin: 4
+  contactor_relay_active_high: true
+  relay_idle_bias_confirmed: "pull_up"
+  contactor_feedback_pin: 5
+  debounce_ms: 50
+  tank_low_active_low: true
+  interlock_out_active_low: false
+  interlock_mid_active_low: false
+  leak_active_low: true
+  feedback_active_low: false
+
+garden_gateway:
+  enabled: true
+  serial_port: "/dev/garden-gateway"
+  baud_rate: 115200
+  link_loss_timeout_s: 30
+  shared_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+stale_thresholds:
+  head_end_s: 15
+  garden_s: 90
+  soil_s: 60
+  reservoir_s: 20
+  heartbeat_s: 30
+
+network:
+  bind_address: "0.0.0.0"
+  port: 8000
+  allow_all_interfaces: true
+
+security:
+  auth_token_file: "/var/lib/smart-water/auth.json"
+  rate_limit_per_minute: 120
+  webhook_allowlist: []
+
+motor:
+  auto_mode: false
+  max_runtime_s: 900
+  cooldown_s: 1800
+  min_off_time_s: 10
+  pull_in_timeout_ms: 1000
+  drop_out_timeout_ms: 1000
+
+power_meter:
+  enabled: true
+  sensor_type: "pzem004t"
+  serial_port: "/dev/pzem"
+  baud_rate: 9600
+  modbus_address: 1
+  voltage_min_v: 180.0
+  voltage_max_v: 260.0
+  voltage_fault_hold_s: 3.0
+  dry_run_current_pct: 65.0
+  dry_run_timeout_s: 5.0
+  overload_current_pct: 135.0
+  overload_timeout_s: 3.0
+  inrush_blanking_s: 3.0
+  learning_runs_required: 5
+  baseline_current_a: 4.25
+
+level_sensor:
+  enabled: true
+  sensor_type: "jsn_sr04t"
+  tank_shape: "cylinder"
+  tank_height_cm: 200.0
+  tank_diameter_cm: 150.0
+  sensor_offset_cm: 10.0
+  predictive_stop_enabled: true
+  predictive_stop_pct: 95.0
+  slow_fill_min_run_s: 60.0
+  min_fill_rate_lpm: 5.0
+  night_leak_detection_enabled: true
+  night_leak_window_start: 1
+  night_leak_window_end: 4
+  night_leak_max_drop_litres: 15.0
+
+weather:
+  enabled: true
+  latitude: 22.5726
+  longitude: 88.3639
+  poll_interval_hours: 3.0
+  forecast_lookahead_hours: 12
+  rain_prob_threshold_pct: 60.0
+  past_rain_threshold_mm: 5.0
+  timeout_seconds: 10.0
+
+zones:
+  zone_1:
+    name: "Front Garden"
+    enabled: true
+    soil_dry_threshold_pct: 35.0
+    pulse_seconds: 15
+    max_pulse_seconds: 60
+    cooldown_hours: 6.0
+    has_flow_meter: true
+    flow_meter_model: "YF-S201"
+    flow_k_factor: 7.5
+    min_pulses_10s: 5
+    soak_cycle_enabled: true
+    soak_pulse_seconds: 10
+    soak_wait_seconds: 10
+    soak_pulse_count: 2
+    daily_budget_litres: 50.0
+    calibration:
+      dry_v: 2.70
+      wet_v: 1.20
+      margin_v: 0.20
+  zone_2:
+    name: "Vegetable Patch"
+    enabled: true
+    soil_dry_threshold_pct: 35.0
+    pulse_seconds: 15
+    max_pulse_seconds: 60
+    cooldown_hours: 6.0
+    has_flow_meter: false
+    min_pulses_10s: 0
+    daily_budget_litres: 40.0
+    calibration:
+      dry_v: 2.70
+      wet_v: 1.20
+      margin_v: 0.20
+
+audio:
+  enabled: false
+
+buzzer:
+  enabled: false
+
+display:
+  enabled: false
+
+database:
+  path: "/var/lib/smart-water/system.db"
+  cache_size: -2000
+  busy_timeout: 5000
+  synchronous: "NORMAL"
+
+watchdog:
+  enabled: false
+
+setup_complete: true
