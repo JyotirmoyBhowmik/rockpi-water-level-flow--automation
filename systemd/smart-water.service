@@ -38,6 +38,7 @@ ReadWritePaths=/var/lib/smart-water /run/smart-water
 Environment=PYTHONUNBUFFERED=1
 Environment=SMART_WATER_CONFIG=/etc/smart-water/config.yaml
 Environment=SMART_WATER_DATA_DIR=/var/lib/smart-water
+Environment=SMART_WATER_MAX_RAM_MB=128
 
 # Security Sandbox Hardening
 NoNewPrivileges=yes
