@@ -794,16 +794,16 @@
         </div>
         <div class="flex items-center gap-2">
           <button class="btn btn-secondary btn-sm" data-action="refresh-charts">🔄 Refresh Charts</button>
-          <button class="btn btn-secondary btn-sm" data-action="send-daily-summary">📩 Send 24h Summary Alert</button>
+          <button class="btn btn-secondary btn-sm" id="btn-send-summary" data-action="send-daily-summary">📩 Send 24h Summary Alert</button>
         </div>
       </div>
 
-      <!-- 24h Summary Digest Card -->
+      <!-- Summary Digest Card -->
       <div class="card" style="margin-bottom: 1.25rem; background: #f8fafc; border-left: 4px solid #0284c7;">
         <div class="card-header">
           <div class="flex items-center gap-2">
             <span style="font-size: 16px;">📊</span>
-            <h2 style="font-size: 0.95rem; font-weight: 700; color: #0f172a; margin: 0;">24-Hour Operational Digest</h2>
+            <h2 id="summary-digest-title" style="font-size: 0.95rem; font-weight: 700; color: #0f172a; margin: 0;">24-Hour Operational Digest</h2>
           </div>
           <span class="badge badge-gray" id="summary-period-badge">Past 24 Hours</span>
         </div>

@@ -101,6 +101,9 @@ The system reliably orchestrates:
 
 ## 2. Bill of Materials (BOM) & Sourcing
 
+> [!TIP]
+> **Comprehensive 60-Component Engineering Manual:** For an exhaustive, noob-friendly component-by-component hardware guide detailing exact wire connections, terminal numbers, failure modes, YAML configuration keys, and scaling instructions for every single item across all 5 hardware sections, see the [Complete Industrial Hardware & BOM Engineering Guide](docs/HARDWARE_BOM_GUIDE.md).
+
 | Category | Component | Quantity | Specification / Model | Est. Cost (USD) | Function |
 | :--- | :--- | :---: | :--- | :---: | :--- |
 | **SBC** | Radxa ROCK Pi S | 1 | 512MB RAM, RK3308B, Type-C Power | $18.00 | Central Automation Head-End (<35 MB footprint) |

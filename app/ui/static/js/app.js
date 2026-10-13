@@ -608,14 +608,14 @@ function renderSvgLineChart(containerId, seriesList, options = {}) {
     return;
   }
 
-  let minX = Infinity;
-  let maxX = -Infinity;
+  let minX = options.xMin !== undefined ? options.xMin : Infinity;
+  let maxX = options.xMax !== undefined ? options.xMax : -Infinity;
   let minY = options.yMin !== undefined ? options.yMin : Infinity;
   let maxY = options.yMax !== undefined ? options.yMax : -Infinity;
 
   allPoints.forEach((pt) => {
-    if (pt.x < minX) minX = pt.x;
-    if (pt.x > maxX) maxX = pt.x;
+    if (options.xMin === undefined && pt.x < minX) minX = pt.x;
+    if (options.xMax === undefined && pt.x > maxX) maxX = pt.x;
     if (options.yMin === undefined && pt.y < minY) minY = pt.y;
     if (options.yMax === undefined && pt.y > maxY) maxY = pt.y;
   });
@@ -703,21 +703,33 @@ function renderSvgLineChart(containerId, seriesList, options = {}) {
 async function fetchHistoricalCharts(windowStr = "24h") {
   const hoursMap = { "1h": 1, "6h": 6, "24h": 24, "48h": 48 };
   const hours = hoursMap[windowStr] || 24;
-  const fromDate = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  const limitMap = { "1h": 120, "6h": 400, "24h": 1500, "48h": 3000 };
+  const limit = limitMap[windowStr] || 1500;
+  const toMs = Date.now();
+  const fromMs = toMs - hours * 3600 * 1000;
+  const fromDate = new Date(fromMs).toISOString();
 
-  // 1. Fetch 24h Summary data
+  // Dynamic UI Header updates
+  const elTitle = document.getElementById("summary-digest-title");
+  if (elTitle) elTitle.textContent = `${hours}-Hour Operational Digest`;
+  const elBadge = document.getElementById("summary-period-badge");
+  if (elBadge) elBadge.textContent = hours === 1 ? "Past 1 Hour" : `Past ${hours} Hours`;
+  const elSendBtn = document.getElementById("btn-send-summary");
+  if (elSendBtn) elSendBtn.textContent = `📩 Send ${hours}h Summary Alert`;
+
+  // 1. Fetch Summary data
   fetch(`/api/summary/daily?hours=${hours}`, { headers: getAuthHeaders() })
     .then((r) => r.json())
     .then((resp) => {
       if (resp && resp.status === "success" && resp.data) {
-        updateDailySummaryCard(resp.data);
+        updateDailySummaryCard(resp.data, hours);
       }
     })
     .catch((err) => console.warn("Summary fetch error:", err));
 
   // 2. Fetch readings history
   try {
-    const res = await fetch(`/api/history?limit=300&from=${encodeURIComponent(fromDate)}`, {
+    const res = await fetch(`/api/history?limit=${limit}&from=${encodeURIComponent(fromDate)}`, {
       headers: getAuthHeaders(),
     });
     if (!res.ok) return;
@@ -751,31 +763,33 @@ async function fetchHistoricalCharts(windowStr = "24h") {
       }
     });
 
+    const xOpts = { xMin: fromMs, xMax: toMs };
+
     renderSvgLineChart("chart-soil-container", [
       { name: "Zone 1", color: "#0284c7", data: z1 },
       { name: "Zone 2", color: "#10b981", data: z2 },
       { name: "Zone 3", color: "#f59e0b", data: z3 },
       { name: "Zone 4", color: "#8b5cf6", data: z4 },
-    ], { yUnit: "V", yMin: 0.0, yMax: 3.3, yDecimals: 2 });
+    ], { yUnit: "V", yMin: 0.0, yMax: 3.3, yDecimals: 2, ...xOpts });
 
     renderSvgLineChart("chart-motor-container", [
       { name: "Motor State", color: "#0284c7", data: motorPts, stepLine: true, strokeWidth: 2.5 },
       { name: "Flow Pulses", color: "#3b82f6", data: flowPts },
-    ], { yMin: 0, yMax: 1, yDecimals: 0 });
+    ], { yMin: 0, yMax: 1, yDecimals: 0, ...xOpts });
 
-    fetchLevelConsumptionChart(hours, tankPts);
+    fetchLevelConsumptionChart(hours, tankPts, xOpts);
   } catch (err) {
     console.error("Historical chart fetch failed:", err);
   }
 }
 
-async function fetchLevelConsumptionChart(hours, fallbackTankPts) {
+async function fetchLevelConsumptionChart(hours, fallbackTankPts, xOpts = {}) {
   try {
     const res = await fetch(`/api/level/consumption?hours=${hours}`, { headers: getAuthHeaders() });
     if (!res.ok) {
       renderSvgLineChart("chart-level-container", [
         { name: "Water Level", color: "#0284c7", data: fallbackTankPts },
-      ], { yUnit: "%", yMin: 0, yMax: 100, yDecimals: 0 });
+      ], { yUnit: "%", yMin: 0, yMax: 100, yDecimals: 0, ...xOpts });
       return;
     }
     const resp = await res.json();
@@ -801,16 +815,21 @@ async function fetchLevelConsumptionChart(hours, fallbackTankPts) {
       series.push({ name: "Hourly Consumption (L)", color: "#10b981", data: consPts });
     }
 
-    renderSvgLineChart("chart-level-container", series, { yDecimals: 1 });
+    renderSvgLineChart("chart-level-container", series, { yDecimals: 1, ...xOpts });
   } catch (err) {
     renderSvgLineChart("chart-level-container", [
       { name: "Water Level", color: "#0284c7", data: fallbackTankPts },
-    ], { yUnit: "%", yMin: 0, yMax: 100, yDecimals: 0 });
+    ], { yUnit: "%", yMin: 0, yMax: 100, yDecimals: 0, ...xOpts });
   }
 }
 
-function updateDailySummaryCard(data) {
+function updateDailySummaryCard(data, hours = 24) {
   if (!data) return;
+  const elTitle = document.getElementById("summary-digest-title");
+  if (elTitle) elTitle.textContent = `${hours}-Hour Operational Digest`;
+  const elBadge = document.getElementById("summary-period-badge");
+  if (elBadge) elBadge.textContent = hours === 1 ? "Past 1 Hour" : `Past ${hours} Hours`;
+
   const m = data.motor || {};
   const elRuntime = document.getElementById("summary-motor-runtime");
   if (elRuntime) elRuntime.textContent = `${m.runtime_s || 0}s`;
@@ -847,19 +866,21 @@ function updateDailySummaryCard(data) {
 }
 
 async function triggerDailySummarySend() {
+  const hoursMap = { "1h": 1, "6h": 6, "24h": 24, "48h": 48 };
+  const hours = hoursMap[currentChartWindow] || 24;
   try {
-    const res = await fetch("/api/summary/daily/send?hours=24", {
+    const res = await fetch(`/api/summary/daily/send?hours=${hours}`, {
       method: "POST",
       headers: getAuthHeaders(),
     });
     if (res.ok) {
-      alert("24-Hour summary digest dispatched to Telegram and ntfy!");
+      alert(`${hours}-Hour summary digest dispatched to Telegram and ntfy!`);
     } else {
       const err = await res.json().catch(() => ({}));
       alert("Failed to send summary: " + (err.message || res.statusText));
     }
   } catch (err) {
-    alert("Error sending daily summary: " + err);
+    alert("Network error dispatching summary: " + err);
   }
 }
 

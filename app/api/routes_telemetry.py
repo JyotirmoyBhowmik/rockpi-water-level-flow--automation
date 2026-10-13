@@ -150,7 +150,7 @@ async def get_readings_history(
     source: Optional[str] = Query(default=None, description="Filter source (e.g. z1_volts)"),
     from_date: Optional[str] = Query(default=None, alias="from"),
     to_date: Optional[str] = Query(default=None, alias="to"),
-    limit: int = Query(default=100, ge=1, le=500, description="Hard cap <= 500 to protect RAM"),
+    limit: int = Query(default=300, ge=1, le=3000, description="Cap <= 3000 to protect RAM"),
 ) -> Dict[str, Any]:
     """
     Returns historical downsampled sensor readings with strict pagination.
