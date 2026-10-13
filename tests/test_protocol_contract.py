@@ -275,68 +275,73 @@ async def test_gateway_driver_write_packet_verified_by_cpp(monkeypatch):
     canonical JSON lines accepted and verified by the native C++ verifier.
     """
     from app.config import system_config
-    from app.hardware.gateway_driver import garden_gateway
+    from pydantic import SecretStr
 
-    system_config.garden_gateway.shared_key = SHARED_KEY
-    cpp_exe = get_or_compile_cpp_binary()
+    old_key = system_config.garden_gateway.shared_key
+    system_config.garden_gateway.shared_key = SecretStr(SHARED_KEY)
+    try:
+        cpp_exe = get_or_compile_cpp_binary()
 
-    captured_lines = []
+        captured_lines = []
 
-    class MockSerial:
-        def write(self, data: bytes):
-            captured_lines.append(data.decode("utf-8"))
+        class MockSerial:
+            def write(self, data: bytes):
+                captured_lines.append(data.decode("utf-8"))
 
-        def flush(self):
-            pass
+            def flush(self):
+                pass
 
-    garden_gateway._serial_port = MockSerial()
+        garden_gateway._serial_port = MockSerial()
 
-    # 1. Cmd packet
-    await garden_gateway._write_packet({
-        "v": "1.1",
-        "t": "cmd",
-        "nonce": 4321,
-        "seq": 1,
-        "id": "cmd-gw-1",
-        "z": 1,
-        "run_s": 15,
-    })
+        # 1. Cmd packet
+        await garden_gateway._write_packet({
+            "v": "1.1",
+            "t": "cmd",
+            "nonce": 4321,
+            "seq": 1,
+            "id": "cmd-gw-1",
+            "z": 1,
+            "run_s": 15,
+        })
 
-    # 2. Stop packet
-    await garden_gateway._write_packet({
-        "v": "1.1",
-        "t": "stop",
-        "nonce": 4321,
-        "seq": 2,
-        "id": "cmd-gw-2",
-        "z": 1,
-    })
+        # 2. Stop packet
+        await garden_gateway._write_packet({
+            "v": "1.1",
+            "t": "stop",
+            "nonce": 4321,
+            "seq": 2,
+            "id": "cmd-gw-2",
+            "z": 1,
+        })
 
-    # 3. Stop All packet
-    await garden_gateway._write_packet({
-        "v": "1.1",
-        "t": "stop_all",
-        "nonce": 4321,
-        "seq": 3,
-        "id": "cmd-gw-3",
-    })
+        # 3. Stop All packet
+        await garden_gateway._write_packet({
+            "v": "1.1",
+            "t": "stop_all",
+            "nonce": 4321,
+            "seq": 3,
+            "id": "cmd-gw-3",
+        })
 
-    garden_gateway._serial_port = None
-    assert len(captured_lines) == 3
+        garden_gateway._serial_port = None
+        assert len(captured_lines) == 3
 
-    stdin_input = "".join(captured_lines)
-    proc = subprocess.run(
-        [str(cpp_exe), "--verify", SHARED_KEY],
-        input=stdin_input,
-        capture_output=True,
-        text=True,
-        check=True
-    )
+        stdin_input = "".join(captured_lines)
+        proc = subprocess.run(
+            [str(cpp_exe), "--verify", SHARED_KEY],
+            input=stdin_input,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
 
-    results = [r.strip() for r in proc.stdout.splitlines() if r.strip()]
-    assert len(results) == 3
-    for r in results:
-        assert r.startswith("OK "), f"C++ rejected packet from gateway_driver: {r}"
+        results = [r.strip() for r in proc.stdout.splitlines() if r.strip()]
+        assert len(results) == 3
+        for r in results:
+            assert r.startswith("OK "), f"C++ rejected packet from gateway_driver: {r}"
+    finally:
+        garden_gateway._serial_port = None
+        system_config.garden_gateway.shared_key = old_key
 
 
 @pytest.mark.asyncio

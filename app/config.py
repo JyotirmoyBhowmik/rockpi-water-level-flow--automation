@@ -552,6 +552,13 @@ def save_settings(cfg: SystemConfig) -> bool:
     temp_file = settings_file.with_suffix(".tmp")
 
     # Extract UI-editable subset
+    if isinstance(cfg.garden_gateway.shared_key, str):
+        cfg.garden_gateway.shared_key = SecretStr(cfg.garden_gateway.shared_key)
+    if isinstance(cfg.ntfy.access_token, str):
+        cfg.ntfy.access_token = SecretStr(cfg.ntfy.access_token)
+    if isinstance(cfg.mqtt.password, str):
+        cfg.mqtt.password = SecretStr(cfg.mqtt.password)
+
     payload = {
         "head_end": cfg.head_end.model_dump(mode="json"),
         "motor": cfg.motor.model_dump(mode="json"),

@@ -7,7 +7,7 @@ import time
 import httpx
 
 BASE_URL = "http://localhost:8088"
-TOKEN = "x0K24oMMwyB3eIKffdv2UKNv6PM9w838UXQlw8aPU5Y"
+TOKEN = "HXEZG033X6rctzm5ptDdjfGaNMYlDavrNQ9el2tS3O0"
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 
 
